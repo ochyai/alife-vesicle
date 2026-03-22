@@ -223,6 +223,11 @@ class World:
         self.t = 0; self.births = 0; self.deaths = 0
         self.ves_on = True
         self.div_hist = []
+        # Ablation flags (used by experiment.py)
+        self._disable_sexual = False
+        self._disable_predation = False
+        self._disable_speciation = False
+        self._disable_aging = False
         self._init()
 
     def _rebuild_nut_cache(self):
@@ -429,9 +434,10 @@ class World:
         self.cflash[idx] = (self.cflash[idx] - 1).clamp(min=0)
 
         # ── Change 4: Aging pressure (faster — threshold 1200, doubled rate) ──
-        ages = self.cage[idx].float()  # (N,)
-        extra_drain = ((ages - 1200).clamp(min=0) / 3000.0) * 0.08
-        self.cenergy[idx] -= extra_drain
+        if not self._disable_aging:
+            ages = self.cage[idx].float()  # (N,)
+            extra_drain = ((ages - 1200).clamp(min=0) / 3000.0) * 0.08
+            self.cenergy[idx] -= extra_drain
 
         # ── Change 4: Crowding penalty ──
         # dd already computed with diagonal = 1e9
@@ -450,21 +456,23 @@ class World:
             gsim = (g_norm.unsqueeze(1) * neigh_g_norm).sum(dim=2) # (N, k) cosine sim
 
             # Speciation: if avg similarity to neighbors > 0.8 → small energy drain
-            avg_gsim = gsim.mean(dim=1)                            # (N,)
-            too_similar = avg_gsim > 0.8
-            if too_similar.any():
-                self.cenergy[idx[too_similar]] -= 0.003
+            if not self._disable_speciation:
+                avg_gsim = gsim.mean(dim=1)                            # (N,)
+                too_similar = avg_gsim > 0.8
+                if too_similar.any():
+                    self.cenergy[idx[too_similar]] -= 0.003
 
             # Predation: strong negative similarity (< -0.5) → energy transfer
             # Only check nearest neighbor (column 0) for efficiency, 5% chance
-            nn_sim = gsim[:, 0]                                    # (N,)
-            pred_mask = (nn_sim < -0.5) & (torch.rand(N, device=DEV) < 0.05)
-            if pred_mask.any():
-                predator_idx = idx[pred_mask]
-                prey_local = nidx[pred_mask, 0]                    # local indices into idx
-                prey_idx = idx[prey_local]
-                self.cenergy[predator_idx] += 0.1
-                self.cenergy[prey_idx] -= 0.15
+            if not self._disable_predation:
+                nn_sim = gsim[:, 0]                                    # (N,)
+                pred_mask = (nn_sim < -0.5) & (torch.rand(N, device=DEV) < 0.05)
+                if pred_mask.any():
+                    predator_idx = idx[pred_mask]
+                    prey_local = nidx[pred_mask, 0]                    # local indices into idx
+                    prey_idx = idx[prey_local]
+                    self.cenergy[predator_idx] += 0.1
+                    self.cenergy[prey_idx] -= 0.15
 
         # ── Change 3 (Bug Fix): Nutrient interaction using expressed phenotype ──
         # Use self.cstate[idx] (already updated above) for cosine similarity
@@ -533,7 +541,7 @@ class World:
                     self.cenergy[e_idx] -= VCOST
 
         # ── Sexual recombination (crossover reproduction) ──
-        if N > 1 and k > 0:
+        if N > 1 and k > 0 and not self._disable_sexual:
             # Eligible: energy > DIV_E * 0.7, nearest neighbor < 20px
             energy_ok = self.cenergy[idx] > DIV_E * 0.7           # (N,)
             nn_dist = dd.min(dim=1).values                         # (N,)
