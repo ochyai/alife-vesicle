@@ -45,12 +45,12 @@ SL = 1 + K_N + VES_TOKENS  # total sequence length: self + neighbors + vesicle t
 ADIM = 2 + 1 + 1 + DIM  # dx,dy,emit,alpha,vesicle_content
 
 # ━━ Sim ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MAX_C = 700; MAX_V = 3000; INIT_N = 300; MAX_NUTS = 64
-INIT_E = 120.; DIV_E = 150.; MUT = 0.04
-VSPD = 1.3; VLIFE = 150; VCOST = 0.12
-ARAD = 26.; DECAY = 0.005; MCOST = 0.01
-NNUTS = 8; NRAD = 160; NGAIN = 0.6
-PASSIVE_REGEN = 0.004  # background sustain everywhere
+MAX_C = 700; MAX_V = 3000; INIT_N = 200; MAX_NUTS = 64
+INIT_E = 80.; DIV_E = 88.; MUT = 0.04
+VSPD = 1.3; VLIFE = 150; VCOST = 0.06
+ARAD = 26.; DECAY = 0.003; MCOST = 0.005
+NNUTS = 16; NRAD = 200; NGAIN = 0.5
+PASSIVE_REGEN = 0.012  # background sustain everywhere
 
 # ━━ Visual ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 BG = (3, 3, 12); PBG = (8, 8, 18); FADE = 12
@@ -436,7 +436,7 @@ class World:
         # ── Change 4: Aging pressure (faster — threshold 1200, doubled rate) ──
         if not self._disable_aging:
             ages = self.cage[idx].float()  # (N,)
-            extra_drain = ((ages - 1200).clamp(min=0) / 3000.0) * 0.08
+            extra_drain = ((ages - 4000).clamp(min=0) / 8000.0) * 0.05
             self.cenergy[idx] -= extra_drain
 
         # ── Change 4: Crowding penalty ──
@@ -482,7 +482,7 @@ class World:
         # Change 9: Nutrient energy regen
         n_nuts = len(self.nuts)
         if n_nuts > 0:
-            self.nut_energy[:n_nuts] = (self.nut_energy[:n_nuts] + 0.02).clamp(max=100.0)
+            self.nut_energy[:n_nuts] = (self.nut_energy[:n_nuts] + 0.08).clamp(max=100.0)
 
         # Change 17: Use cached nutrient tensors
         if n_nuts > 0 and N > 0:
@@ -515,7 +515,7 @@ class World:
 
                     # Change 9: Deplete nutrient energy (faster depletion rate: 0.03)
                     total_gain = gain.sum().item()
-                    self.nut_energy[ni] = (self.nut_energy[ni] - total_gain * 0.03).clamp(min=0)
+                    self.nut_energy[ni] = (self.nut_energy[ni] - total_gain * 0.01).clamp(min=0)
 
         # ── Emit vesicles (vectorized) ──
         # Change 1 (Bug Fix): Gate emission on ves_on
