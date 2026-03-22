@@ -10,7 +10,7 @@ Controls: SPC:pause  V:vesicle  D:panel  R:reset  +/-:speed  Z/X:zoom
           S:stats  F5:record  F12:screenshot  F11:fullscreen  click:nutrient  ESC:quit
 """
 
-import math, random, os, time
+import math, random, os, time, sys
 import pygame, torch, torch.nn as nn, torch.nn.functional as F
 try:
     import tracemalloc as _tm
@@ -18,6 +18,21 @@ try:
     _TM = True
 except Exception:
     _TM = False
+
+# ━━ Device ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _pick_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+DEV = _pick_device()
+if "--cpu" in sys.argv:
+    DEV = torch.device("cpu")
+    print("[ALife] forced CPU mode")
+else:
+    print(f"[ALife] device: {DEV}")
 
 # ━━ Layout ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TW, TH = 1440, 800
@@ -41,7 +56,7 @@ PASSIVE_REGEN = 0.004  # background sustain everywhere
 # ━━ Visual ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 BG = (3, 3, 12); PBG = (8, 8, 18); FADE = 12
 
-SWt = torch.tensor([float(SW), float(TH)])
+SWt = torch.tensor([float(SW), float(TH)], device=DEV)
 
 
 # ━━ Color ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -56,7 +71,7 @@ def hsv(h, s, v):
 
 def pheno_rgb(p, bri=0.7):
     """Map phenotype vector → vivid HSV color. Full 360° hue, high saturation."""
-    v = torch.tanh(p[:4]).tolist() if len(p) >= 4 else [0]*4
+    v = torch.tanh(p[:4]).cpu().tolist() if len(p) >= 4 else [0]*4
     hue = (v[0] * 130 + v[1] * 90 + 180) % 360
     sat = 0.75 + 0.25 * abs(v[2])                    # very saturated always
     return hsv(hue, min(1., sat), min(1., max(.15, bri)))
@@ -164,7 +179,7 @@ class Brain(nn.Module):
 class Nut:
     __slots__ = ['x','y','sig','radius']
     def __init__(self, x, y):
-        self.x, self.y, self.sig, self.radius = x, y, torch.randn(DIM), NRAD
+        self.x, self.y, self.sig, self.radius = x, y, torch.randn(DIM, device=DEV), NRAD
     @property
     def color(self): return pheno_rgb(self.sig, .45)
     @property
@@ -174,36 +189,36 @@ class Nut:
 # ━━ World (fully tensorized, upgraded) ━━━━━━━━━━━━━━━━━━━━━
 class World:
     def __init__(self):
-        self.brain = Brain()
+        self.brain = Brain().to(DEV)
         # Cell pool
-        self.cpos = torch.zeros(MAX_C, 2)
-        self.cvel = torch.zeros(MAX_C, 2)
-        self.cstate = torch.zeros(MAX_C, DIM)
-        self.cgenome = torch.zeros(MAX_C, GDIM)
-        self.cenergy = torch.zeros(MAX_C)
-        self.cage = torch.zeros(MAX_C, dtype=torch.long)
-        self.cgen = torch.zeros(MAX_C, dtype=torch.long)
-        self.calive = torch.zeros(MAX_C, dtype=torch.bool)
-        self.cclust = torch.zeros(MAX_C, dtype=torch.long)
-        self.cflash = torch.zeros(MAX_C)
+        self.cpos = torch.zeros(MAX_C, 2, device=DEV)
+        self.cvel = torch.zeros(MAX_C, 2, device=DEV)
+        self.cstate = torch.zeros(MAX_C, DIM, device=DEV)
+        self.cgenome = torch.zeros(MAX_C, GDIM, device=DEV)
+        self.cenergy = torch.zeros(MAX_C, device=DEV)
+        self.cage = torch.zeros(MAX_C, dtype=torch.long, device=DEV)
+        self.cgen = torch.zeros(MAX_C, dtype=torch.long, device=DEV)
+        self.calive = torch.zeros(MAX_C, dtype=torch.bool, device=DEV)
+        self.cclust = torch.zeros(MAX_C, dtype=torch.long, device=DEV)
+        self.cflash = torch.zeros(MAX_C, device=DEV)
         # Previous positions for motion trail (3 history frames)
-        self.cprev1 = torch.zeros(MAX_C, 2)
-        self.cprev2 = torch.zeros(MAX_C, 2)
-        self.cprev3 = torch.zeros(MAX_C, 2)
+        self.cprev1 = torch.zeros(MAX_C, 2, device=DEV)
+        self.cprev2 = torch.zeros(MAX_C, 2, device=DEV)
+        self.cprev3 = torch.zeros(MAX_C, 2, device=DEV)
         # Change 8: Recent absorption counter (exponential decay)
-        self.crecent = torch.zeros(MAX_C)
+        self.crecent = torch.zeros(MAX_C, device=DEV)
         # Vesicle pool
-        self.vpos = torch.zeros(MAX_V, 2)
-        self.vprev = torch.zeros(MAX_V, 2)  # previous vesicle position for visual use
-        self.vvel = torch.zeros(MAX_V, 2)
-        self.vcont = torch.zeros(MAX_V, DIM)
-        self.vlife = torch.zeros(MAX_V)
-        self.valive = torch.zeros(MAX_V, dtype=torch.bool)
+        self.vpos = torch.zeros(MAX_V, 2, device=DEV)
+        self.vprev = torch.zeros(MAX_V, 2, device=DEV)  # previous vesicle position for visual use
+        self.vvel = torch.zeros(MAX_V, 2, device=DEV)
+        self.vcont = torch.zeros(MAX_V, DIM, device=DEV)
+        self.vlife = torch.zeros(MAX_V, device=DEV)
+        self.valive = torch.zeros(MAX_V, dtype=torch.bool, device=DEV)
         # Change 9: Nutrient energy
-        self.nut_energy = torch.full((MAX_NUTS,), 100.0)
+        self.nut_energy = torch.full((MAX_NUTS,), 100.0, device=DEV)
         # Change 17: Cached nutrient tensors
-        self.nut_pos = torch.zeros(0, 2)
-        self.nut_sig = torch.zeros(0, DIM)
+        self.nut_pos = torch.zeros(0, 2, device=DEV)
+        self.nut_sig = torch.zeros(0, DIM, device=DEV)
         # Meta
         self.nuts = []
         self.t = 0; self.births = 0; self.deaths = 0
@@ -214,11 +229,11 @@ class World:
     def _rebuild_nut_cache(self):
         """Change 17: Rebuild cached nutrient position/signature tensors."""
         if self.nuts:
-            self.nut_pos = torch.tensor([[n.x, n.y] for n in self.nuts])
-            self.nut_sig = torch.stack([n.sig for n in self.nuts])
+            self.nut_pos = torch.tensor([[n.x, n.y] for n in self.nuts], device=DEV)
+            self.nut_sig = torch.stack([n.sig for n in self.nuts])  # already on DEV
         else:
-            self.nut_pos = torch.zeros(0, 2)
-            self.nut_sig = torch.zeros(0, DIM)
+            self.nut_pos = torch.zeros(0, 2, device=DEV)
+            self.nut_sig = torch.zeros(0, DIM, device=DEV)
 
     def add_nutrient(self, x, y):
         """Add a nutrient and rebuild cache."""
@@ -245,14 +260,14 @@ class World:
         self.calive[dead] = True
         if near_nuts and self.nuts:
             # Spawn near random nutrient sources (Gaussian scatter)
-            nut_idx = torch.randint(len(self.nuts), (m,))
-            centers = torch.tensor([[self.nuts[i].x, self.nuts[i].y] for i in nut_idx])
-            self.cpos[dead] = (centers + torch.randn(m, 2) * 60) % SWt
+            nut_idx = torch.randint(len(self.nuts), (m,), device=DEV)
+            centers = torch.tensor([[self.nuts[i].x, self.nuts[i].y] for i in nut_idx.cpu()], device=DEV)
+            self.cpos[dead] = (centers + torch.randn(m, 2, device=DEV) * 60) % SWt
         else:
-            self.cpos[dead] = torch.rand(m, 2) * SWt
+            self.cpos[dead] = torch.rand(m, 2, device=DEV) * SWt
         self.cvel[dead] = 0
-        self.cstate[dead] = torch.randn(m, DIM) * .1
-        self.cgenome[dead] = torch.randn(m, GDIM) * .5
+        self.cstate[dead] = torch.randn(m, DIM, device=DEV) * .1
+        self.cgenome[dead] = torch.randn(m, GDIM, device=DEV) * .5
         self.cenergy[dead] = INIT_E
         self.cage[dead] = 0; self.cgen[dead] = 0; self.cflash[dead] = 0
         self.cprev1[dead] = self.cpos[dead].clone()
@@ -273,7 +288,7 @@ class World:
         va = self.valive
         if va.any():
             self.vprev[va] = self.vpos[va].clone()  # store previous position
-            self.vpos[va] += self.vvel[va] + torch.randn(va.sum(), 2) * .2
+            self.vpos[va] += self.vvel[va] + torch.randn(va.sum(), 2, device=DEV) * .2
             self.vpos[va] %= SWt
             self.vvel[va] *= .994
             self.vlife[va] -= 1
@@ -302,7 +317,7 @@ class World:
                     # Write mask: only write to active channels
                     write_mask = (content.abs() > 0.3).float()
                     # Blend factor: boost if recent absorptions > 3
-                    blend = torch.where(recent > 3, torch.tensor(0.5), torch.tensor(0.3))
+                    blend = torch.where(recent > 3, torch.tensor(0.5, device=DEV), torch.tensor(0.3, device=DEV))
                     blend = blend.unsqueeze(1)  # (n_abs, 1)
                     self.cstate[a_cells] = state * (1 - blend * write_mask) + content * blend * write_mask
 
@@ -321,11 +336,11 @@ class World:
 
         # Change 5: Build attention mask — True = masked position
         # Sequence: [self(1), neighbors(K_N), vesicle_tokens(VES_TOKENS)]
-        attn_mask = torch.zeros(N, SL, dtype=torch.bool)
+        attn_mask = torch.zeros(N, SL, dtype=torch.bool, device=DEV)
         # Self token is never masked (position 0)
 
         if k == 0:
-            ns = torch.zeros(N, K_N, DIM)
+            ns = torch.zeros(N, K_N, DIM, device=DEV)
             attn_mask[:, 1:1+K_N] = True  # all neighbor slots masked
         else:
             _, nidx = dd.topk(k, largest=False)         # (N, k)
@@ -365,7 +380,7 @@ class World:
                 attn_mask[:, 1+k:1+K_N] = True
 
         # ── Change 10: Vesicle tokens — nearby vesicles as attention tokens ──
-        ves_tokens = torch.zeros(N, VES_TOKENS, DIM)
+        ves_tokens = torch.zeros(N, VES_TOKENS, DIM, device=DEV)
         attn_mask[:, 1+K_N:] = True  # default: all vesicle token slots masked
 
         va_idx = self.valive.nonzero(as_tuple=True)[0]
@@ -444,7 +459,7 @@ class World:
             # Predation: strong negative similarity (< -0.5) → energy transfer
             # Only check nearest neighbor (column 0) for efficiency, 5% chance
             nn_sim = gsim[:, 0]                                    # (N,)
-            pred_mask = (nn_sim < -0.5) & (torch.rand(N) < 0.05)
+            pred_mask = (nn_sim < -0.5) & (torch.rand(N, device=DEV) < 0.05)
             if pred_mask.any():
                 predator_idx = idx[pred_mask]
                 prey_local = nidx[pred_mask, 0]                    # local indices into idx
@@ -500,7 +515,7 @@ class World:
         if self.ves_on:
             # Suppress emission when starving (energy < 40)
             emit_gate = (self.cenergy[idx] > 40).float()
-            emit_roll = torch.rand(N) < (emit_p * emit_gate)
+            emit_roll = torch.rand(N, device=DEV) < (emit_p * emit_gate)
             if emit_roll.any():
                 e_idx = idx[emit_roll]
                 n_emit = emit_roll.sum().item()
@@ -509,7 +524,7 @@ class World:
                 if n_emit > 0:
                     e_idx = e_idx[:n_emit]
                     dv = dead_v[:n_emit]
-                    ang = torch.rand(n_emit) * (2 * math.pi)
+                    ang = torch.rand(n_emit, device=DEV) * (2 * math.pi)
                     self.vprev[dv] = self.cpos[e_idx].clone()  # init prev to spawn pos
                     self.vpos[dv] = self.cpos[e_idx]
                     self.vvel[dv] = torch.stack([ang.cos(), ang.sin()], -1) * VSPD
@@ -537,7 +552,7 @@ class World:
             sex_eligible = (energy_ok & nn_energy_ok & close_enough
                             & (sex_sim > 0.3) & (sex_sim < 0.7))
             # 2% chance per eligible pair per step
-            sex_roll = torch.rand(N) < 0.02
+            sex_roll = torch.rand(N, device=DEV) < 0.02
             sex_mask = sex_eligible & sex_roll
 
             if sex_mask.any():
@@ -551,16 +566,16 @@ class World:
                     parent_b = parent_b[:n_sex]
                     child_slots = dead_c_sex[:n_sex]
                     # Per-gene coin flip crossover + mutation
-                    coin = torch.rand(n_sex, GDIM) < 0.5
+                    coin = torch.rand(n_sex, GDIM, device=DEV) < 0.5
                     child_genome = torch.where(coin,
                                                self.cgenome[parent_a],
                                                self.cgenome[parent_b])
-                    child_genome += torch.randn(n_sex, GDIM) * MUT
+                    child_genome += torch.randn(n_sex, GDIM, device=DEV) * MUT
                     # Child state = average of parents
                     child_state = (self.cstate[parent_a] + self.cstate[parent_b]) * 0.5
                     # Spawn child near midpoint
                     child_pos = ((self.cpos[parent_a] + self.cpos[parent_b]) * 0.5
-                                 + torch.randn(n_sex, 2) * 10) % SWt
+                                 + torch.randn(n_sex, 2, device=DEV) * 10) % SWt
                     # Cost: 30% energy each parent
                     self.cenergy[parent_a] *= 0.7
                     self.cenergy[parent_b] *= 0.7
@@ -590,10 +605,10 @@ class World:
             if nd > 0:
                 d_idx = d_idx[:nd]; dc = dead_c[:nd]
                 self.calive[dc] = True
-                self.cpos[dc] = (self.cpos[d_idx] + torch.randn(nd, 2) * 15) % SWt
+                self.cpos[dc] = (self.cpos[d_idx] + torch.randn(nd, 2, device=DEV) * 15) % SWt
                 self.cvel[dc] = 0
                 self.cstate[dc] = self.cstate[d_idx].clone()
-                self.cgenome[dc] = self.cgenome[d_idx] + torch.randn(nd, GDIM) * MUT
+                self.cgenome[dc] = self.cgenome[d_idx] + torch.randn(nd, GDIM, device=DEV) * MUT
                 self.cenergy[dc] = self.cenergy[d_idx] * .45
                 self.cenergy[d_idx] *= .45
                 self.cage[dc] = 0
@@ -747,16 +762,16 @@ class Ren:
         ai = w.calive.nonzero(as_tuple=True)[0]
         N = len(ai)
         if N > 0:
-            pos_np = w.cpos[ai].numpy()
-            state_np = w.cstate[ai].numpy()
-            energy_np = w.cenergy[ai].numpy()
-            vel_np = w.cvel[ai].numpy()
-            age_np = w.cage[ai].long().numpy()
-            flash_np = w.cflash[ai].numpy()
-            genome_np = w.cgenome[ai].numpy()
-            prev1_np = w.cprev1[ai].numpy()
-            prev2_np = w.cprev2[ai].numpy()
-            prev3_np = w.cprev3[ai].numpy()
+            pos_np = w.cpos[ai].cpu().numpy()
+            state_np = w.cstate[ai].cpu().numpy()
+            energy_np = w.cenergy[ai].cpu().numpy()
+            vel_np = w.cvel[ai].cpu().numpy()
+            age_np = w.cage[ai].long().cpu().numpy()
+            flash_np = w.cflash[ai].cpu().numpy()
+            genome_np = w.cgenome[ai].cpu().numpy()
+            prev1_np = w.cprev1[ai].cpu().numpy()
+            prev2_np = w.cprev2[ai].cpu().numpy()
+            prev3_np = w.cprev3[ai].cpu().numpy()
         else:
             pos_np = state_np = energy_np = vel_np = age_np = flash_np = genome_np = None
             prev1_np = prev2_np = prev3_np = None
@@ -765,11 +780,11 @@ class Ren:
         va = w.valive.nonzero(as_tuple=True)[0]
         nv = len(va)
         if nv > 0:
-            vpos_np = w.vpos[va].numpy()
-            vvel_np = w.vvel[va].numpy()
-            vcont_np = w.vcont[va].numpy()
-            vlife_np = w.vlife[va].numpy()
-            vprev_np = w.vprev[va].numpy()
+            vpos_np = w.vpos[va].cpu().numpy()
+            vvel_np = w.vvel[va].cpu().numpy()
+            vcont_np = w.vcont[va].cpu().numpy()
+            vlife_np = w.vlife[va].cpu().numpy()
+            vprev_np = w.vprev[va].cpu().numpy()
         else:
             vpos_np = vvel_np = vcont_np = vlife_np = vprev_np = None
 
@@ -1037,8 +1052,8 @@ class Ren:
             dd_t.fill_diagonal_(1e9)
             k_conn = min(3, N - 1)
             _, nn_idx = dd_t.topk(k_conn, largest=False)  # (N, k_conn)
-            nn_d = dd_t.gather(1, nn_idx).numpy()  # (N, k_conn)
-            nn_idx_np = nn_idx.numpy()
+            nn_d = dd_t.gather(1, nn_idx).cpu().numpy()  # (N, k_conn)
+            nn_idx_np = nn_idx.cpu().numpy()
             for ci in range(min(N, 350)):
                 cx0, cy0 = int(pos_np[ci, 0]), int(pos_np[ci, 1])
                 col_ci = pheno_rgb_np(state_np[ci, :4], 0.3)
@@ -1134,8 +1149,8 @@ class Ren:
                     pygame.draw.rect(self.scr, nc, (end_x+4, y, 4, max(2, rh*3)))
             prev_cl = cl
 
-            gvals = torch.tanh(w.cgenome[i]).tolist()
-            pvals = torch.tanh(w.cstate[i, :16]).tolist()
+            gvals = torch.tanh(w.cgenome[i]).cpu().tolist()
+            pvals = torch.tanh(w.cstate[i, :16]).cpu().tolist()
             for d in range(GDIM):
                 pygame.draw.rect(self.scr, dim_col(gvals[d]), (bx+d*seg, y, seg-1, max(1,rh-1)))
             for d in range(16):
