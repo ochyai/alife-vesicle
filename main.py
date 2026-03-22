@@ -27,12 +27,11 @@ def _pick_device():
         return torch.device("mps")
     return torch.device("cpu")
 
-DEV = _pick_device()
-if "--cpu" in sys.argv:
-    DEV = torch.device("cpu")
-    print("[ALife] forced CPU mode")
+if "--gpu" in sys.argv:
+    DEV = _pick_device()
 else:
-    print(f"[ALife] device: {DEV}")
+    DEV = torch.device("cpu")  # CPU faster for N<1000; use --gpu for large sims
+print(f"[ALife] device: {DEV}")
 
 # ━━ Layout ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TW, TH = 1440, 800
@@ -643,6 +642,10 @@ class World:
                 self.div_hist.append(self.cstate[ai].var(0).sum().item())
                 if len(self.div_hist) > 400:
                     self.div_hist = self.div_hist[-400:]
+
+        # MPS sync: flush lazy ops to prevent GPU memory buildup
+        if DEV.type == "mps" and self.t % 4 == 0:
+            torch.mps.synchronize()
 
 
 # ━━ Renderer (Enhanced) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
