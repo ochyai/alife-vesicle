@@ -47,9 +47,9 @@ The genome-modulated attention mechanism significantly alters phenotypic varianc
 \section{Introduction}
 \label{sec:intro}
 
-The aspiration of artificial life research is to create systems that exhibit lifelike properties---self-replication, adaptation, ecological dynamics, and open-ended evolution---from minimal mechanistic primitives \cite{langton1990computation}.
-While classical cellular automata and particle-based models have yielded rich phenomenology, they typically rely on hand-designed update rules that limit the behavioral complexity of individual agents.
-Conversely, recent advances in deep reinforcement learning have produced sophisticated individual agents, yet these systems rarely exhibit the emergent ecological and evolutionary dynamics that characterize biological communities.
+The aspiration of artificial life research is to create systems that exhibit lifelike properties---self-replication, adaptation, ecological dynamics, and open-ended evolution---from minimal mechanistic primitives \cite{langton1990computation,packard2019overview,taylor2016open,bedau2003artificial}.
+While classical cellular automata and particle-based models---from von~Neumann's self-reproducing automata \cite{vonneumann1966theory} and Langton's self-replicating loops \cite{langton1984self} to Ray's Tierra system \cite{ray1991approach}---have yielded rich phenomenology, they typically rely on hand-designed update rules that limit the behavioral complexity of individual agents.
+Conversely, recent advances in deep reinforcement learning \cite{lowe2017multi} have produced sophisticated individual agents, yet these systems rarely exhibit the emergent ecological and evolutionary dynamics that characterize biological communities.
 
 In this work, we bridge these two traditions by constructing an artificial life system whose agents are controlled by a Transformer architecture \cite{vaswani2017attention}---the same class of model that has driven recent advances in language understanding, vision, and decision-making.
 Our key insight is that the multi-head self-attention mechanism provides a natural substrate for relational reasoning about neighboring agents and environmental signals, and that the attention parameters themselves can be made a target of evolution.
@@ -76,6 +76,7 @@ The remainder of this paper is organized as follows. Section~\ref{sec:related} s
 \paragraph{Neural cellular automata.}
 Mordvintsev et al.\ \cite{mordvintsev2020growing} introduced Growing Neural Cellular Automata (NCA), demonstrating that a small convolutional network applied uniformly at each grid cell can learn to grow and regenerate complex patterns through gradient-based training.
 Zhang et al.\ \cite{zhang2025petridish} extended this paradigm with Petri Dish NCA, evolving NCA rules to produce virtual creatures with diverse morphologies.
+Indirect encoding approaches such as HyperNEAT \cite{stanley2009hypercube} have been used to evolve large-scale neural network connectivity patterns, while Gaier and Ha \cite{gaier2019weight} demonstrated that network topology alone---without weight training---can produce capable agents, highlighting the importance of architecture over parameters.
 Our work differs fundamentally in that agents are mobile particles rather than grid-fixed cells, and the neural controller uses attention over a variable-length neighbor set rather than convolution over a fixed local neighborhood.
 
 \paragraph{Particle-based artificial life.}
@@ -86,16 +87,18 @@ Neural MMO \cite{suarez2023neural} provides a massively multiagent game environm
 
 \paragraph{Emergent communication.}
 The study of emergent communication in multi-agent systems has a rich history.
-Lazaridou et al.\ \cite{lazaridou2017multi} showed that agents trained with reinforcement learning can develop referential communication protocols.
-Foerster et al.\ \cite{foerster2016learning} demonstrated that agents can learn to communicate through differentiable channels.
-Stigmergic communication---indirect coordination through environmental modification---has been explored in multi-agent reinforcement learning by Wang et al.\ \cite{wang2019sigrl} and Zheng et al.\ \cite{zheng2022pool}, drawing on biological inspiration from pheromone-based insect coordination \cite{bonabeau1999swarm}.
+Lazaridou et al.\ \cite{lazaridou2017multi} showed that agents trained with reinforcement learning can develop referential communication protocols, though Kottur et al.\ \cite{kottur2017natural} cautioned that natural language does not emerge naturally without appropriate inductive biases.
+Foerster et al.\ \cite{foerster2016learning} demonstrated that agents can learn to communicate through differentiable channels; Mordatch and Abbeel \cite{mordatch2018emergence} showed grounded compositional language can emerge in multi-agent populations, and Eccles et al.\ \cite{eccles2019biases} identified key biases that facilitate emergent communication.
+Stigmergic communication---indirect coordination through environmental modification---has been explored in multi-agent reinforcement learning by Wang et al.\ \cite{wang2019sigrl} and Zheng et al.\ \cite{zheng2022pool}, drawing on biological inspiration from pheromone-based insect coordination \cite{bonabeau1999swarm} and the self-organization principles observed in flocking \cite{reynolds1987flocks} and swarm systems \cite{camazine2001self}.
 Our vesicle mechanism is most closely related to stigmergic approaches, but the vesicles carry high-dimensional neural state vectors rather than scalar signals, enabling richer information transfer.
 
 \paragraph{Neuroevolution and evolved attention.}
-The evolution of neural network topologies and weights has a long history beginning with NEAT \cite{stanley2002evolving}.
+The evolution of neural network topologies and weights has a long history beginning with NEAT \cite{stanley2002evolving} and its indirect encoding extension HyperNEAT \cite{stanley2009hypercube}.
 Sims \cite{sims1994evolving} pioneered the co-evolution of morphology and neural control.
 Tang et al.\ \cite{tang2020neuroevolution} evolved attentional mechanisms for self-interpretable agents, demonstrating that attention weights can serve as a readable trace of agent decision-making.
 Ha \cite{ha2019reinforcement} explored the design of agent bodies through reinforcement learning.
+Salimans et al.\ \cite{salimans2017evolution} showed that evolution strategies scale competitively with reinforcement learning, while Such et al.\ \cite{such2017deep} demonstrated that deep neuroevolution via genetic algorithms can match gradient-based methods without backpropagation.
+Gaier and Ha \cite{gaier2019weight} further showed that weight-agnostic neural networks---where topology matters more than weight values---can solve reinforcement learning tasks, providing a conceptual contrast to our genome-modulated approach where shared weights are reinterpreted through per-agent scaling.
 Our genome-modulated attention differs from prior neuroevolution approaches in that the network weights are shared across all agents; evolution acts only on a compact genome vector that multiplicatively scales the query and key projections, providing a biologically inspired analog of epigenetic regulation.
 
 
@@ -109,7 +112,7 @@ We describe the complete model in five subsections: the world representation (Se
 \subsection{World and Cell Representation}
 \label{sec:world}
 
-The world $\mathcal{W}$ is a toroidal two-dimensional domain of size $W_x \times W_y$ (default $1080 \times 800$ pixels).
+The world $\mathcal{W}$ is a toroidal two-dimensional domain of size $W_x \times W_y$ (default $1080 \times 800$ pixels), following the tradition of spatial agent models where boundary-free topology avoids edge artifacts \cite{reynolds1987flocks,vicsek1995novel}.
 All distance computations use the wrapped (toroidal) metric:
 \begin{equation}
   d_w(\mathbf{p}_i, \mathbf{p}_j) = \left\| \min\!\big(|\mathbf{p}_i - \mathbf{p}_j|,\; \mathbf{W} - |\mathbf{p}_i - \mathbf{p}_j|\big) \right\|_2
@@ -145,7 +148,7 @@ For cell $i$, the self-token is constructed by projecting the genome into state 
   \mathbf{x}_i = \text{LN}\!\big(\mathbf{s}_i + W_g \mathbf{g}_i\big)
   \label{eq:self_token}
 \end{equation}
-where $W_g \in \mathbb{R}^{D \times G}$ is a learned projection matrix and $\text{LN}(\cdot)$ denotes layer normalization.
+where $W_g \in \mathbb{R}^{D \times G}$ is a learned projection matrix and $\text{LN}(\cdot)$ denotes layer normalization \cite{ba2016layer}.
 
 \subsubsection{Relational Features}
 
@@ -275,6 +278,7 @@ The ``recent absorptions'' counter decays exponentially ($\times 0.95$ per step)
 
 \paragraph{Vesicles as attention tokens.}
 Beyond direct state modification through absorption, vesicles also serve as context for the Transformer brain.
+The biological inspiration draws from extracellular vesicle research, which has revealed that exosomes, microvesicles, and other secreted particles carry rich molecular cargo between cells, modulating recipient behavior at a distance \cite{raposo2013extracellular,tkach2016communication,vanniel2018shedding}.
 Up to three vesicles within the sensing radius ($2 r_a = 52$ pixels) are included as additional tokens in the attention sequence (Eq.~\ref{eq:token_seq}), allowing cells to ``perceive'' nearby vesicles before absorbing them and adjust their behavior accordingly.
 
 
@@ -334,6 +338,7 @@ Cells die when $e_i \leq 0$. A minimum population floor of 10 cells is maintaine
 \label{sec:evolution}
 
 The system supports four evolutionary mechanisms, each operating through the energy economy.
+The design draws on foundational principles of genetic algorithms \cite{holland1992adaptation,goldberg1989genetic}.
 
 \paragraph{Asexual division.}
 When a cell's energy exceeds the division threshold $E_{\text{div}} = 88$, it produces a daughter cell:
@@ -579,7 +584,8 @@ With vesicles, the environment becomes informationally richer: cells must conten
 
 This perturbation can be viewed as a form of \emph{environmental noise} that prevents the population from settling into fixed attractors.
 While this reduces reproductive success in the short term, it may provide the variability necessary for long-term evolutionary innovation.
-The analogy to biological extracellular vesicles (exosomes) is deliberate: in biological systems, vesicles carry proteins, lipids, and nucleic acids between cells, modulating recipient cell behavior in ways that are only beginning to be understood \cite{beer2020autopoiesis}.
+The analogy to biological extracellular vesicles (exosomes) is deliberate: in biological systems, vesicles carry proteins, lipids, and nucleic acids between cells, modulating recipient cell behavior in ways that are only beginning to be understood \cite{vanniel2018shedding,buddingh2017artificial}.
+Recent work on synthetic compartments with life-like functionality \cite{buddingh2017artificial} further motivates the design of artificial vesicle communication as a bridge between biology and computation.
 
 \subsection{The Paradox of Sexual Recombination}
 
@@ -600,7 +606,7 @@ Several limitations of the current system should be acknowledged:
   The brain operates as a fixed, randomly chosen function that is modulated by the genome but never improved.
 
   \item \textbf{No learning.} The absence of gradient-based or reward-based learning means that cells cannot adapt within their lifetimes.
-  Combining evolution with lifetime learning (the Baldwin effect) could dramatically enrich the dynamics.
+  Combining evolution with lifetime learning (the Baldwin effect) could dramatically enrich the dynamics; population-based training \cite{jaderberg2017population} offers one promising approach for jointly optimizing hyperparameters and agent behavior across a population.
 
   \item \textbf{Short timescales.} At 30{,}000 steps and maximum generations of 8--29, the evolutionary dynamics are in an early, transient phase.
   Open-ended evolution, if achievable, would require substantially longer runs.
@@ -614,7 +620,8 @@ Several directions are promising for future development.
 First, incorporating gradient-based meta-learning within individual cell lifetimes could enable Baldwinian evolution, where learned behaviors guide evolutionary search.
 Second, scaling the system to thousands or millions of cells (potentially leveraging GPU acceleration via the existing CUDA/MPS support) would enable the emergence of richer ecological dynamics.
 Third, extending the genome to modulate additional aspects of the brain architecture (e.g., feed-forward weights, layer normalization parameters) could increase the evolvability of the system.
-Finally, introducing an open-ended complexity measure \cite{lehman2011evolving} could help determine whether the system is capable of sustained evolutionary innovation.
+Fourth, introducing an open-ended complexity measure \cite{lehman2011evolving} could help determine whether the system is capable of sustained evolutionary innovation---a central challenge in artificial life research \cite{packard2019overview,taylor2016open}.
+Finally, the vesicle system could be extended toward a richer artificial chemistry \cite{banzhaf2015artificial} in which vesicle contents undergo compositional reactions, potentially enabling the emergence of self-replicating molecular patterns analogous to those studied by Hutton \cite{hutton2002evolvable}.
 
 
 % ============================================================================
