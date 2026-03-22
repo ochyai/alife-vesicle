@@ -10,8 +10,14 @@ Renderer code (class Ren) is preserved exactly from v5.
 Controls: SPC:pause  V:vesicle  R:reset  +/-:speed  click:nutrient  ESC:quit
 """
 
-import math, random
+import math, random, os, time
 import pygame, torch, torch.nn as nn, torch.nn.functional as F
+try:
+    import tracemalloc as _tm
+    _tm.start()
+    _TM = True
+except Exception:
+    _TM = False
 
 # ━━ Layout ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TW, TH = 1440, 800
@@ -33,7 +39,7 @@ NNUTS = 8; NRAD = 160; NGAIN = 0.6
 PASSIVE_REGEN = 0.004  # background sustain everywhere
 
 # ━━ Visual ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BG = (4, 4, 12); PBG = (8, 8, 18); FADE = 14
+BG = (2, 2, 8); PBG = (8, 8, 18); FADE = 14
 
 SWt = torch.tensor([float(SW), float(TH)])
 
@@ -180,6 +186,10 @@ class World:
         self.calive = torch.zeros(MAX_C, dtype=torch.bool)
         self.cclust = torch.zeros(MAX_C, dtype=torch.long)
         self.cflash = torch.zeros(MAX_C)
+        # Previous positions for motion trail (3 history frames)
+        self.cprev1 = torch.zeros(MAX_C, 2)
+        self.cprev2 = torch.zeros(MAX_C, 2)
+        self.cprev3 = torch.zeros(MAX_C, 2)
         # Change 8: Recent absorption counter (exponential decay)
         self.crecent = torch.zeros(MAX_C)
         # Vesicle pool
@@ -245,6 +255,9 @@ class World:
         self.cgenome[dead] = torch.randn(m, GDIM) * .5
         self.cenergy[dead] = INIT_E
         self.cage[dead] = 0; self.cgen[dead] = 0; self.cflash[dead] = 0
+        self.cprev1[dead] = self.cpos[dead].clone()
+        self.cprev2[dead] = self.cpos[dead].clone()
+        self.cprev3[dead] = self.cpos[dead].clone()
         self.crecent[dead] = 0
 
     def step(self):
@@ -383,6 +396,10 @@ class World:
         vc_out = act[:, 4:]                             # (N, DIM)
 
         # ── Movement ──
+        # Shift previous positions for motion trails
+        self.cprev3[idx] = self.cprev2[idx].clone()
+        self.cprev2[idx] = self.cprev1[idx].clone()
+        self.cprev1[idx] = self.cpos[idx].clone()
         new_vel = dxy * .6 + self.cvel[idx] * .4
         self.cpos[idx] = (p + new_vel) % SWt
         self.cvel[idx] = new_vel
@@ -397,9 +414,9 @@ class World:
         self.cage[idx] += 1
         self.cflash[idx] = (self.cflash[idx] - 1).clamp(min=0)
 
-        # ── Change 4: Aging pressure ──
+        # ── Change 4: Aging pressure (faster — threshold 1200, doubled rate) ──
         ages = self.cage[idx].float()  # (N,)
-        extra_drain = ((ages - 2500).clamp(min=0) / 5000.0) * 0.05
+        extra_drain = ((ages - 1200).clamp(min=0) / 3000.0) * 0.08
         self.cenergy[idx] -= extra_drain
 
         # ── Change 4: Crowding penalty ──
@@ -409,6 +426,31 @@ class World:
             crowded = nearest_d < 15.0
             if crowded.any():
                 self.cenergy[idx[crowded]] -= 0.005
+
+        # ── Speciation pressure & Predation (genome-based interactions) ──
+        if N > 1 and k > 0:
+            # Genome cosine similarity between each cell and its k nearest neighbors
+            g_norm = F.normalize(g, dim=1)                         # (N, GDIM)
+            neigh_g = g[nidx]                                      # (N, k, GDIM)
+            neigh_g_norm = F.normalize(neigh_g, dim=2)             # (N, k, GDIM)
+            gsim = (g_norm.unsqueeze(1) * neigh_g_norm).sum(dim=2) # (N, k) cosine sim
+
+            # Speciation: if avg similarity to neighbors > 0.8 → small energy drain
+            avg_gsim = gsim.mean(dim=1)                            # (N,)
+            too_similar = avg_gsim > 0.8
+            if too_similar.any():
+                self.cenergy[idx[too_similar]] -= 0.003
+
+            # Predation: strong negative similarity (< -0.5) → energy transfer
+            # Only check nearest neighbor (column 0) for efficiency, 5% chance
+            nn_sim = gsim[:, 0]                                    # (N,)
+            pred_mask = (nn_sim < -0.5) & (torch.rand(N) < 0.05)
+            if pred_mask.any():
+                predator_idx = idx[pred_mask]
+                prey_local = nidx[pred_mask, 0]                    # local indices into idx
+                prey_idx = idx[prey_local]
+                self.cenergy[predator_idx] += 0.1
+                self.cenergy[prey_idx] -= 0.15
 
         # ── Change 3 (Bug Fix): Nutrient interaction using expressed phenotype ──
         # Use self.cstate[idx] (already updated above) for cosine similarity
@@ -437,6 +479,11 @@ class World:
                     # Base gain always positive; sim bonus on top (gentle selection)
                     gain = NGAIN * (0.6 + 0.4 * sim) * (1 - nd[mask] / nut_radius).clamp(min=0)
 
+                    # Nutrient competition: divide gain by number of feeders
+                    n_feeders = mask.sum().item()
+                    if n_feeders > 1:
+                        gain = gain / n_feeders
+
                     # Change 9: Nutrient depletion modulates gain
                     ne = self.nut_energy[ni].item()
                     if ne < 10.0:
@@ -444,9 +491,9 @@ class World:
 
                     self.cenergy[idx[mask]] += gain
 
-                    # Change 9: Deplete nutrient energy
+                    # Change 9: Deplete nutrient energy (faster depletion rate: 0.03)
                     total_gain = gain.sum().item()
-                    self.nut_energy[ni] = (self.nut_energy[ni] - total_gain * 0.01).clamp(min=0)
+                    self.nut_energy[ni] = (self.nut_energy[ni] - total_gain * 0.03).clamp(min=0)
 
         # ── Emit vesicles (vectorized) ──
         # Change 1 (Bug Fix): Gate emission on ves_on
@@ -470,6 +517,69 @@ class World:
                     self.vlife[dv] = VLIFE
                     self.valive[dv] = True
                     self.cenergy[e_idx] -= VCOST
+
+        # ── Sexual recombination (crossover reproduction) ──
+        if N > 1 and k > 0:
+            # Eligible: energy > DIV_E * 0.7, nearest neighbor < 20px
+            energy_ok = self.cenergy[idx] > DIV_E * 0.7           # (N,)
+            nn_dist = dd.min(dim=1).values                         # (N,)
+            close_enough = nn_dist < 20.0                          # (N,)
+            nn_idx_local = dd.argmin(dim=1)                        # (N,) local index of nearest
+
+            # Genome cosine similarity with nearest neighbor
+            g_norm_sex = F.normalize(g, dim=1)                     # (N, GDIM)
+            nn_g = g[nn_idx_local]                                 # (N, GDIM)
+            nn_g_norm = F.normalize(nn_g, dim=1)                   # (N, GDIM)
+            sex_sim = (g_norm_sex * nn_g_norm).sum(dim=1)          # (N,)
+
+            # Both parents need enough energy; moderate similarity 0.3-0.7
+            nn_energy_ok = self.cenergy[idx[nn_idx_local]] > DIV_E * 0.7
+            sex_eligible = (energy_ok & nn_energy_ok & close_enough
+                            & (sex_sim > 0.3) & (sex_sim < 0.7))
+            # 2% chance per eligible pair per step
+            sex_roll = torch.rand(N) < 0.02
+            sex_mask = sex_eligible & sex_roll
+
+            if sex_mask.any():
+                parent_a = idx[sex_mask]
+                parent_b = idx[nn_idx_local[sex_mask]]
+                n_sex = len(parent_a)
+                dead_c_sex = (~self.calive).nonzero(as_tuple=True)[0]
+                n_sex = min(n_sex, len(dead_c_sex))
+                if n_sex > 0:
+                    parent_a = parent_a[:n_sex]
+                    parent_b = parent_b[:n_sex]
+                    child_slots = dead_c_sex[:n_sex]
+                    # Per-gene coin flip crossover + mutation
+                    coin = torch.rand(n_sex, GDIM) < 0.5
+                    child_genome = torch.where(coin,
+                                               self.cgenome[parent_a],
+                                               self.cgenome[parent_b])
+                    child_genome += torch.randn(n_sex, GDIM) * MUT
+                    # Child state = average of parents
+                    child_state = (self.cstate[parent_a] + self.cstate[parent_b]) * 0.5
+                    # Spawn child near midpoint
+                    child_pos = ((self.cpos[parent_a] + self.cpos[parent_b]) * 0.5
+                                 + torch.randn(n_sex, 2) * 10) % SWt
+                    # Cost: 30% energy each parent
+                    self.cenergy[parent_a] *= 0.7
+                    self.cenergy[parent_b] *= 0.7
+                    # Initialize child
+                    self.calive[child_slots] = True
+                    self.cpos[child_slots] = child_pos
+                    self.cvel[child_slots] = 0
+                    self.cstate[child_slots] = child_state
+                    self.cgenome[child_slots] = child_genome
+                    self.cenergy[child_slots] = INIT_E * 0.8
+                    self.cage[child_slots] = 0
+                    self.cgen[child_slots] = (torch.max(self.cgen[parent_a],
+                                                         self.cgen[parent_b]) + 1)
+                    self.cflash[child_slots] = 8.
+                    self.crecent[child_slots] = 0
+                    self.cprev1[child_slots] = child_pos.clone()
+                    self.cprev2[child_slots] = child_pos.clone()
+                    self.cprev3[child_slots] = child_pos.clone()
+                    self.births += n_sex
 
         # ── Division (vectorized) ──
         div_mask = self.cenergy[idx] > DIV_E
@@ -536,7 +646,7 @@ class Ren:
         # [15] Preallocated surfaces
         self.fade_surf = pygame.Surface((SW, TH))
         self.fade_surf.fill(BG)
-        self.fade_surf.set_alpha(18)
+        self.fade_surf.set_alpha(14)
         self.cell_surf = pygame.Surface((SW, TH), pygame.SRCALPHA)
         self.nut_surf = pygame.Surface((SW, TH), pygame.SRCALPHA)
 
@@ -552,6 +662,28 @@ class Ren:
 
         # Track previous flash state for ripple detection
         self._prev_flash = None
+
+        # Composition surface for zoom
+        self._comp_surf = pygame.Surface((SW, TH))
+
+        # ── Camera / Zoom ──
+        self.zoom_level = 1.0   # 0.5 .. 3.0
+        self.cam_offset = [0.0, 0.0]  # pan offset in world coords
+        self._mid_drag = False
+        self._mid_prev = None
+
+        # ── Recording ──
+        self.recording = False
+        self.rec_frame = 0
+
+        # ── Fullscreen ──
+        self._fullscreen = False
+        self._win_size = (TW, TH)
+
+        # ── Stats overlay ──
+        self.show_stats = False
+        self._step_ms = 0.0
+        self._draw_ms = 0.0
 
     def _make_nutrient_sprite(self, nut):
         """Create a cloudy sprite using overlapping translucent circles."""
@@ -583,12 +715,23 @@ class Ren:
             self._prev_nut_ids = nut_ids
 
     def draw(self, w, paused, speed):
+        t0 = time.perf_counter()
         if self.show_panel:
             self._sim(w, sim_w=SW)
             self._panel(w)
         else:
             self._sim(w, sim_w=TW)
         self._hud(w, paused, speed)
+        self._draw_ms = (time.perf_counter() - t0) * 1000.0
+
+        # ── Recording: save frame before flip ──
+        if self.recording:
+            rec_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
+            os.makedirs(rec_dir, exist_ok=True)
+            fname = os.path.join(rec_dir, f"frame_{self.rec_frame:06d}.png")
+            pygame.image.save(self.scr, fname)
+            self.rec_frame += 1
+
         pygame.display.flip()
 
     def _sim(self, w, sim_w=SW):
@@ -606,8 +749,12 @@ class Ren:
             age_np = w.cage[ai].long().numpy()
             flash_np = w.cflash[ai].numpy()
             genome_np = w.cgenome[ai].numpy()
+            prev1_np = w.cprev1[ai].numpy()
+            prev2_np = w.cprev2[ai].numpy()
+            prev3_np = w.cprev3[ai].numpy()
         else:
             pos_np = state_np = energy_np = vel_np = age_np = flash_np = genome_np = None
+            prev1_np = prev2_np = prev3_np = None
 
         # Same for vesicles
         va = w.valive.nonzero(as_tuple=True)[0]
@@ -617,10 +764,11 @@ class Ren:
             vvel_np = w.vvel[va].numpy()
             vcont_np = w.vcont[va].numpy()
             vlife_np = w.vlife[va].numpy()
+            vprev_np = w.vprev[va].numpy()
         else:
-            vpos_np = vvel_np = vcont_np = vlife_np = None
+            vpos_np = vvel_np = vcont_np = vlife_np = vprev_np = None
 
-        # ── Vesicle trails — tapered streaks [12] ──
+        # ── Vesicle trails — softer wider glow + point light [12] ──
         if nv > 0:
             for vi in range(nv):
                 t = vlife_np[vi] / VLIFE
@@ -631,28 +779,67 @@ class Ren:
                 if speed > 0.1:
                     tail_x = x - int(vx * 3)
                     tail_y = y - int(vy * 3)
+                    # Wider softer trail glow underneath
+                    soft_col = (col[0] // 3, col[1] // 3, col[2] // 3)
+                    pygame.draw.line(self.trail, soft_col, (tail_x, tail_y), (x, y),
+                                     max(3, int(5 * t)))
                     # Draw streak from tail to head
                     pygame.draw.line(self.trail, col, (tail_x, tail_y), (x, y),
                                      max(1, int(2 * t)))
+                    # Extended trail from previous position
+                    px, py = int(vprev_np[vi, 0]), int(vprev_np[vi, 1])
+                    d_prev = abs(px - x) + abs(py - y)
+                    if d_prev < 100:
+                        dim_c = (col[0] // 2, col[1] // 2, col[2] // 2)
+                        pygame.draw.line(self.trail, dim_c, (px, py), (tail_x, tail_y),
+                                         max(1, int(1.5 * t)))
                     # Bright head dot
-                    bright_col = (min(255, col[0] + 60),
-                                  min(255, col[1] + 60),
-                                  min(255, col[2] + 60))
+                    bright_col = (min(255, col[0] + 80),
+                                  min(255, col[1] + 80),
+                                  min(255, col[2] + 80))
                     pygame.draw.circle(self.trail, bright_col, (x, y),
-                                       max(1, int(1.5 * t)))
+                                       max(2, int(2.5 * t)))
+                    # Tiny white point light at vesicle head
+                    pygame.draw.circle(self.trail, (255, 255, 255), (x, y), 1)
                 else:
                     pygame.draw.circle(self.trail, col, (x, y),
                                        max(1, int(2 * t + .5)))
 
-        # Cell glow on trail — subtle
+        # ── Cell motion trails — fading comet tails on trail surface ──
         if N > 0:
             for ci in range(N):
                 x, y = int(pos_np[ci, 0]), int(pos_np[ci, 1])
                 e = energy_np[ci]
+                vx, vy = vel_np[ci, 0], vel_np[ci, 1]
+                spd = math.sqrt(vx*vx + vy*vy)
                 col = pheno_rgb_np(state_np[ci, :4], .15 + .2 * min(1., e / DIV_E))
+                # Always draw subtle cell glow
                 pygame.draw.circle(self.trail, col, (x, y), 10)
+                # Motion trail: fading comet tail from previous positions
+                if spd > 0.5:
+                    trail_a = min(1.0, spd * 0.3)
+                    p1x, p1y = int(prev1_np[ci, 0]), int(prev1_np[ci, 1])
+                    p2x, p2y = int(prev2_np[ci, 0]), int(prev2_np[ci, 1])
+                    p3x, p3y = int(prev3_np[ci, 0]), int(prev3_np[ci, 1])
+                    t_w = max(1, int(3 * min(1., e / DIV_E)))
+                    if abs(p1x - x) + abs(p1y - y) < 100:
+                        c1 = (int(col[0] * 0.7 * trail_a),
+                              int(col[1] * 0.7 * trail_a),
+                              int(col[2] * 0.7 * trail_a))
+                        pygame.draw.line(self.trail, c1, (p1x, p1y), (x, y), t_w)
+                    if abs(p2x - p1x) + abs(p2y - p1y) < 100:
+                        c2 = (int(col[0] * 0.4 * trail_a),
+                              int(col[1] * 0.4 * trail_a),
+                              int(col[2] * 0.4 * trail_a))
+                        pygame.draw.line(self.trail, c2, (p2x, p2y), (p1x, p1y), max(1, t_w - 1))
+                    if abs(p3x - p2x) + abs(p3y - p2y) < 100:
+                        c3 = (int(col[0] * 0.2 * trail_a),
+                              int(col[1] * 0.2 * trail_a),
+                              int(col[2] * 0.2 * trail_a))
+                        pygame.draw.line(self.trail, c3, (p3x, p3y), (p2x, p2y), max(1, t_w - 2))
 
-        self.scr.blit(self.trail, (0, 0))
+        # Compose trail into comp surface
+        self._comp_surf.blit(self.trail, (0, 0))
 
         # ── Nutrient zones — cloudy sprites [13] ──
         self._ensure_nut_sprites(w)
@@ -678,7 +865,7 @@ class Ren:
             # Outer ring
             rr = int(nut.radius * pulse)
             pygame.draw.circle(self.nut_surf, (*c, 22), (nx, ny), rr, 1)
-        self.scr.blit(self.nut_surf, (0, 0))
+        self._comp_surf.blit(self.nut_surf, (0, 0))
 
         # ── Absorption ripples [12] — detect new flashes ──
         if N > 0:
@@ -710,7 +897,7 @@ class Ren:
                     new_ripples.append(rip)
         self.ripples = new_ripples
         if self.ripples:
-            self.scr.blit(ripple_surf, (0, 0))
+            self._comp_surf.blit(ripple_surf, (0, 0))
             ripple_surf.fill((0, 0, 0, 0))
 
         # ── Cells — transparent lens / fluid membrane ──
@@ -770,50 +957,64 @@ class Ren:
 
                 body_pts = _membrane_pts(r, 1.0)
 
-                # ── Lens layers (LOD-aware) ──
+                # ── Lens layers (LOD-aware, deep transparency ~30% reduced alphas) ──
                 if n_layers >= 5:
                     # Full: haze + mid + inner + core + membrane
                     haze_pts = _membrane_pts(r + 6, 0.5)
-                    pygame.draw.polygon(self.cell_surf, (*col, int(8 + fl * 15)), haze_pts)
+                    pygame.draw.polygon(self.cell_surf, (*col, int(5 + fl * 10)), haze_pts)
                     mid_pts = _membrane_pts(r + 1, 0.8)
-                    pygame.draw.polygon(self.cell_surf, (*col, int(20 + 15 * t)), mid_pts)
+                    pygame.draw.polygon(self.cell_surf, (*col, int(14 + 10 * t)), mid_pts)
                     inner_pts = _membrane_pts(r * 0.7, 0.6)
-                    pygame.draw.polygon(self.cell_surf, (*col, int(35 + 25 * t + fl * 20)), inner_pts)
+                    pygame.draw.polygon(self.cell_surf, (*col, int(24 + 18 * t + fl * 14)), inner_pts)
                 elif n_layers >= 4:
                     # No haze, mid + inner
                     mid_pts = _membrane_pts(r + 1, 0.8)
-                    pygame.draw.polygon(self.cell_surf, (*col, int(22 + 18 * t)), mid_pts)
+                    pygame.draw.polygon(self.cell_surf, (*col, int(15 + 12 * t)), mid_pts)
                     inner_pts = _membrane_pts(r * 0.7, 0.6)
-                    pygame.draw.polygon(self.cell_surf, (*col, int(40 + 25 * t + fl * 20)), inner_pts)
+                    pygame.draw.polygon(self.cell_surf, (*col, int(28 + 18 * t + fl * 14)), inner_pts)
                 else:
                     # Minimal: just body fill
-                    pygame.draw.polygon(self.cell_surf, (*col, int(35 + 30 * t + fl * 20)), body_pts)
+                    pygame.draw.polygon(self.cell_surf, (*col, int(24 + 21 * t + fl * 14)), body_pts)
 
-                # Core (always drawn — the "focal point")
+                # Core (always drawn — the "focal point", reduced alpha)
                 core_col = (min(255, col[0]+30), min(255, col[1]+30), min(255, col[2]+30))
-                pygame.draw.circle(self.cell_surf, (*core_col, int(50 + 30 * t)),
+                pygame.draw.circle(self.cell_surf, (*core_col, int(35 + 21 * t)),
                                    (x, y), max(2, int(r * 0.35)))
 
-                # Membrane outline (always drawn)
-                mc = (min(255, col[0] + 60 + int(fl * 80)),
-                      min(255, col[1] + 60 + int(fl * 80)),
-                      min(255, col[2] + 60 + int(fl * 80)))
-                pygame.draw.polygon(self.cell_surf, (*mc, int(100 + 80 * t)), body_pts, 1)
+                # ── Membrane outline — thickness varies with energy (surface tension) ──
+                # Iridescence: membrane color shifts with angle + time
+                iri_phase = w.t * 0.03 + idx_val * 0.7
+                iri_r = min(255, col[0] + 60 + int(fl * 80) + int(15 * math.sin(iri_phase)))
+                iri_g = min(255, col[1] + 60 + int(fl * 80) + int(15 * math.sin(iri_phase + 2.09)))
+                iri_b = min(255, col[2] + 60 + int(fl * 80) + int(15 * math.sin(iri_phase + 4.19)))
+                mc = (max(0, iri_r), max(0, iri_g), max(0, iri_b))
+                # Membrane thickness: 1 for dying cells, 2-3 for healthy
+                mem_thick = max(1, min(3, int(1 + 2 * t)))
+                pygame.draw.polygon(self.cell_surf, (*mc, int(70 + 56 * t)), body_pts, mem_thick)
 
-                # Specular highlight (skip secondary in fast mode)
+                # ── Specular highlight — more dramatic shift with velocity ──
                 spec_angle = math.atan2(dy_n, dx_n) if spd > 0.3 else (age * 0.01 + idx_val)
-                spec_r = r * 0.3
+                # More dramatic offset: radius scales with speed
+                spec_r = r * (0.3 + min(0.3, spd * 0.1))
                 spec_x = x + int(math.cos(spec_angle + 0.8) * spec_r)
                 spec_y = y + int(math.sin(spec_angle + 0.8) * spec_r)
                 spec_pulse = math.sin(age * 0.1 + idx_val * 0.7) * 0.2 + 0.8
-                spec_a = int((60 + 80 * spec_pulse + fl * 50) * t)
+                spec_a = int((45 + 60 * spec_pulse + fl * 35) * t)
                 spec_sz = max(2, int(r * 0.2))
-                pygame.draw.circle(self.cell_surf, (255, 255, 255, min(200, spec_a)),
+                pygame.draw.circle(self.cell_surf, (255, 255, 255, min(180, spec_a)),
                                    (spec_x, spec_y), spec_sz)
+
+                # ── Lens shadow — dark circle opposite to specular ──
+                shadow_x = x - int(math.cos(spec_angle + 0.8) * spec_r * 0.8)
+                shadow_y = y - int(math.sin(spec_angle + 0.8) * spec_r * 0.8)
+                shadow_sz = max(2, int(r * 0.25))
+                pygame.draw.circle(self.cell_surf, (0, 0, 0, int(10 + 8 * t)),
+                                   (shadow_x, shadow_y), shadow_sz)
+
                 if n_layers >= 4:
                     spec2_x = x - int(math.cos(spec_angle + 0.3) * spec_r * 0.6)
                     spec2_y = y - int(math.sin(spec_angle + 0.3) * spec_r * 0.6)
-                    pygame.draw.circle(self.cell_surf, (255, 255, 240, min(120, spec_a // 2)),
+                    pygame.draw.circle(self.cell_surf, (255, 255, 240, min(85, spec_a // 2)),
                                        (spec2_x, spec2_y), max(1, spec_sz - 1))
 
                 # ── Division-ready: pulsing outer ring ──
@@ -822,7 +1023,35 @@ class Ren:
                     div_pts = _membrane_pts(r + 4, 0.6)
                     pygame.draw.polygon(self.cell_surf, (255, 255, 200, da), div_pts, 1)
 
-        self.scr.blit(self.cell_surf, (0, 0))
+        self._comp_surf.blit(self.cell_surf, (0, 0))
+
+        # ── Zoom + Pan: scale comp surface and blit to screen ──
+        z = self.zoom_level
+        if abs(z - 1.0) < 0.01 and abs(self.cam_offset[0]) < 1 and abs(self.cam_offset[1]) < 1:
+            # No zoom — direct blit (fast path)
+            self.scr.blit(self._comp_surf, (0, 0))
+        else:
+            # Viewport in world coords: what region of the SW x TH world is visible
+            vw = SW / z
+            vh = TH / z
+            # Center of view in world coords
+            cx = SW / 2.0 + self.cam_offset[0]
+            cy = TH / 2.0 + self.cam_offset[1]
+            src_x = int(cx - vw / 2)
+            src_y = int(cy - vh / 2)
+            src_w = int(vw)
+            src_h = int(vh)
+            # Clamp source rect to surface bounds
+            src_x = max(0, min(src_x, SW - 1))
+            src_y = max(0, min(src_y, TH - 1))
+            src_w = min(src_w, SW - src_x)
+            src_h = min(src_h, TH - src_y)
+            if src_w > 0 and src_h > 0:
+                sub = self._comp_surf.subsurface((src_x, src_y, src_w, src_h))
+                scaled = pygame.transform.scale(sub, (sim_w, TH))
+                self.scr.blit(scaled, (0, 0))
+            else:
+                self.scr.blit(self._comp_surf, (0, 0))
 
     def _panel(self, w):
         px = SW
@@ -909,7 +1138,10 @@ class Ren:
         n = w.calive.sum().item()
         nv = w.valive.sum().item()
         y = 8
-        self.scr.blit(self.f11.render(f"t={w.t}  cells={n}  ves={nv}  x{speed}", True, (120,120,150)), (10, y)); y += 15
+        zoom_str = f"  zoom={self.zoom_level:.1f}x" if abs(self.zoom_level - 1.0) > 0.01 else ""
+        self.scr.blit(self.f11.render(
+            f"t={w.t}  cells={n}  ves={nv}  x{speed}{zoom_str}",
+            True, (120,120,150)), (10, y)); y += 15
         if n > 0:
             ai = w.calive.nonzero(as_tuple=True)[0]
             ae = w.cenergy[ai].mean().item()
@@ -917,12 +1149,41 @@ class Ren:
             ag = w.cgen[ai].float().mean().item()
             self.scr.blit(self.f11.render(f"gen={ag:.1f}/{mg}  E={ae:.0f}  +{w.births}/-{w.deaths}",
                                           True, (120,120,150)), (10, y)); y += 15
-        self.scr.blit(self.f13.render(f"VESICLE: {vl}", True, vc), (10, y))
+        self.scr.blit(self.f13.render(f"VESICLE: {vl}", True, vc), (10, y)); y += 18
+
+        # ── Speed display (prominent) ──
+        spd_col = (255, 200, 80) if speed > 5 else (120, 200, 120)
+        self.scr.blit(self.f13.render(f"SPEED: x{speed}", True, spd_col), (10, y)); y += 18
+
+        # ── Recording indicator ──
+        if self.recording:
+            rec_col = (255, 40, 40) if (w.t // 15) % 2 == 0 else (180, 20, 20)
+            pygame.draw.circle(self.scr, rec_col, (10 + 5, y + 6), 5)
+            self.scr.blit(self.f13.render(f" REC  frame {self.rec_frame}", True, (255, 60, 60)),
+                          (22, y)); y += 18
+
+        # ── Stats overlay ──
+        if self.show_stats:
+            fps_val = self.clk.get_fps()
+            mem_str = ""
+            if _TM:
+                cur, peak = _tm.get_traced_memory()
+                mem_str = f"  mem={cur/1e6:.1f}MB (peak {peak/1e6:.1f}MB)"
+            stats_lines = [
+                f"FPS: {fps_val:.1f}  draw: {self._draw_ms:.1f}ms  step: {self._step_ms:.1f}ms{mem_str}",
+            ]
+            # Nutrient energy levels
+            if w.nuts:
+                ne_vals = [f"{w.nut_energy[i].item():.0f}" for i in range(len(w.nuts))]
+                stats_lines.append(f"nut energy: [{', '.join(ne_vals)}]")
+            for line in stats_lines:
+                self.scr.blit(self.f11.render(line, True, (180, 180, 220)), (10, y)); y += 14
+
         if paused:
             sw_actual = SW if self.show_panel else TW
             self.scr.blit(self.f15.render("|| PAUSED", True, (255,200,100)), (sw_actual//2-50, 10))
         self.scr.blit(self.f11.render(
-            "SPC:pause  V:vesicle  D:panel  R:reset  +/-:speed  click:nutrient  ESC:quit",
+            "SPC:pause V:vesicle D:panel R:reset +/-:speed Z/X:zoom S:stats F5:rec F12:snap F11:full ESC:quit",
             True, (50,50,70)), (10, TH-18))
 
 
@@ -948,18 +1209,105 @@ def main():
                     r._prev_flash = None
                     r._prev_nut_ids = None
                     r.nut_sprites = {}
-                elif ev.key in (pygame.K_PLUS, pygame.K_EQUALS): speed = min(5, speed+1)
+                    r.zoom_level = 1.0
+                    r.cam_offset = [0.0, 0.0]
+                elif ev.key in (pygame.K_PLUS, pygame.K_EQUALS): speed = min(20, speed+1)
                 elif ev.key == pygame.K_MINUS: speed = max(1, speed-1)
+                # ── Zoom keys ──
+                elif ev.key == pygame.K_z:
+                    r.zoom_level = min(3.0, r.zoom_level * 1.15)
+                elif ev.key == pygame.K_x:
+                    r.zoom_level = max(0.5, r.zoom_level / 1.15)
+                    # Clamp cam_offset so we don't go out of bounds
+                    max_ox = max(0, SW / 2 * (1 - 1 / r.zoom_level))
+                    max_oy = max(0, TH / 2 * (1 - 1 / r.zoom_level))
+                    r.cam_offset[0] = max(-max_ox, min(max_ox, r.cam_offset[0]))
+                    r.cam_offset[1] = max(-max_oy, min(max_oy, r.cam_offset[1]))
+                # ── Stats overlay ──
+                elif ev.key == pygame.K_s:
+                    r.show_stats = not r.show_stats
+                # ── Recording (F5) ──
+                elif ev.key == pygame.K_F5:
+                    r.recording = not r.recording
+                    if r.recording:
+                        r.rec_frame = 0
+                        print("[REC] Recording started -> recordings/")
+                    else:
+                        print(f"[REC] Recording stopped. {r.rec_frame} frames saved.")
+                        print("Convert to video:")
+                        print("  ffmpeg -framerate 60 -i recordings/frame_%06d.png "
+                              "-c:v libx264 -pix_fmt yuv420p output.mp4")
+                # ── Screenshot (F12) ──
+                elif ev.key == pygame.K_F12:
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    fname = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         f"screenshot_{ts}.png")
+                    pygame.image.save(r.scr, fname)
+                    print(f"[SNAP] Screenshot saved: {fname}")
+                # ── Fullscreen (F11) ──
+                elif ev.key == pygame.K_F11:
+                    r._fullscreen = not r._fullscreen
+                    if r._fullscreen:
+                        r.scr = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+                    else:
+                        r.scr = pygame.display.set_mode(r._win_size)
+
+            # ── Scroll wheel zoom ──
+            elif ev.type == pygame.MOUSEWHEEL:
+                if ev.y > 0:
+                    r.zoom_level = min(3.0, r.zoom_level * 1.1)
+                elif ev.y < 0:
+                    r.zoom_level = max(0.5, r.zoom_level / 1.1)
+                    max_ox = max(0, SW / 2 * (1 - 1 / r.zoom_level))
+                    max_oy = max(0, TH / 2 * (1 - 1 / r.zoom_level))
+                    r.cam_offset[0] = max(-max_ox, min(max_ox, r.cam_offset[0]))
+                    r.cam_offset[1] = max(-max_oy, min(max_oy, r.cam_offset[1]))
+
+            # ── Middle-click pan ──
             elif ev.type == pygame.MOUSEBUTTONDOWN:
-                mx, my = ev.pos
-                sim_w = SW if r.show_panel else TW
-                if mx < sim_w:
-                    w.add_nutrient(mx, my)
-                    r.nut_sprites = {}  # force sprite regeneration
+                if ev.button == 2:  # middle click
+                    r._mid_drag = True
+                    r._mid_prev = ev.pos
+                elif ev.button == 1:  # left click — add nutrient
+                    mx, my = ev.pos
+                    sim_w = SW if r.show_panel else TW
+                    if mx < sim_w:
+                        # Convert screen coords to world coords (account for zoom+pan)
+                        z = r.zoom_level
+                        vw = SW / z
+                        vh = TH / z
+                        cx = SW / 2.0 + r.cam_offset[0]
+                        cy = TH / 2.0 + r.cam_offset[1]
+                        wx = cx - vw / 2 + (mx / sim_w) * vw
+                        wy = cy - vh / 2 + (my / TH) * vh
+                        wx = max(0, min(SW - 1, wx))
+                        wy = max(0, min(TH - 1, wy))
+                        w.add_nutrient(wx, wy)
+                        r.nut_sprites = {}
+            elif ev.type == pygame.MOUSEBUTTONUP:
+                if ev.button == 2:
+                    r._mid_drag = False
+                    r._mid_prev = None
+            elif ev.type == pygame.MOUSEMOTION:
+                if r._mid_drag and r._mid_prev is not None:
+                    dx = ev.pos[0] - r._mid_prev[0]
+                    dy = ev.pos[1] - r._mid_prev[1]
+                    r._mid_prev = ev.pos
+                    # Pan: move offset in world coords (inverted, scaled by zoom)
+                    z = r.zoom_level
+                    r.cam_offset[0] -= dx / z
+                    r.cam_offset[1] -= dy / z
+                    # Clamp
+                    max_ox = max(0, SW / 2 * (1 - 1 / z))
+                    max_oy = max(0, TH / 2 * (1 - 1 / z))
+                    r.cam_offset[0] = max(-max_ox, min(max_ox, r.cam_offset[0]))
+                    r.cam_offset[1] = max(-max_oy, min(max_oy, r.cam_offset[1]))
 
         if not paused:
+            t0 = time.perf_counter()
             for _ in range(speed):
                 w.step()
+            r._step_ms = (time.perf_counter() - t0) * 1000.0
 
         r.draw(w, paused, speed)
         r.clk.tick(FPS)
