@@ -101,12 +101,18 @@ Salimans et al.\ \cite{salimans2017evolution} showed that evolution strategies s
 Gaier and Ha \cite{gaier2019weight} further showed that weight-agnostic neural networks---where topology matters more than weight values---can solve reinforcement learning tasks, providing a conceptual contrast to our genome-modulated approach where shared weights are reinterpreted through per-agent scaling.
 Our genome-modulated attention differs from prior neuroevolution approaches in that the network weights are shared across all agents; evolution acts only on a compact genome vector that multiplicatively scales the query and key projections, providing a biologically inspired analog of epigenetic regulation.
 
+\textbf{ALife as visual medium.}
+The tradition of ALife visualization as both scientific tool and aesthetic object dates to Sims' \emph{Evolved Virtual Creatures}~\cite{sims1994evolving}, where the visual richness of evolved morphologies was itself a primary contribution.
+More recently, systems like Lenia~\cite{chan2019lenia} and ALIEN~\cite{alien2024} have demonstrated that real-time visualization can reveal emergent phenomena invisible in quantitative analysis alone.
+McCormack and d'Inverno~\cite{mccormack2012computers} argued that computational creativity and artificial life share deep structural concerns: both study systems that generate novelty from simple rules.
+Our visualization design follows this tradition, treating the renderer not as a post-hoc display but as an integral part of the system's epistemic and aesthetic contribution.
+
 
 % ============================================================================
 \section{Model}
 \label{sec:model}
 
-We describe the complete model in five subsections: the world representation (Section~\ref{sec:world}), the Transformer brain architecture (Section~\ref{sec:brain}), vesicle communication (Section~\ref{sec:vesicle}), the energy economy (Section~\ref{sec:energy}), and evolutionary operators (Section~\ref{sec:evolution}).
+We describe the complete model in six subsections: the world representation (Section~\ref{sec:world}), the Transformer brain architecture (Section~\ref{sec:brain}), vesicle communication (Section~\ref{sec:vesicle}), the energy economy (Section~\ref{sec:energy}), evolutionary operators (Section~\ref{sec:evolution}), and real-time visualization (Section~\ref{sec:visualization}).
 
 % --------------------------------------------------------------------------
 \subsection{World and Cell Representation}
@@ -378,6 +384,45 @@ When two cells have strongly dissimilar genomes ($\cos(\mathbf{g}_i, \mathbf{g}_
 The asymmetric transfer (prey loses more than predator gains) models metabolic inefficiency and creates selective pressure for genome divergence.
 
 
+\subsection{Real-Time Visualization}
+\label{sec:visualization}
+
+The renderer maps internal simulation state onto visual channels that make emergent dynamics immediately legible (Figure~\ref{fig:visual}).
+Each cell is drawn as a \emph{transparent polygonal membrane} with $n$-vertex organic deformation:
+\begin{equation}
+  r_j(\theta) = R_{\text{base}} \bigl(1 + \eta(\theta; \mathbf{g}_i, \mathbf{s}_i, a_i)\bigr) \cdot \bigl(1 + \lambda \cos(\theta - \phi_v)\bigr)
+\end{equation}
+where $R_{\text{base}} \propto e_i$ scales with energy (larger = more energetic), $\eta$ is a low-frequency noise function seeded by genome and state (giving each cell a unique silhouette), and $\lambda \cos(\theta - \phi_v)$ stretches the membrane along the velocity direction $\phi_v$, producing a fluid-dynamic deformation analogous to biological cell motility.
+
+\textbf{Color encoding.}
+Cell hue is determined by the first four components of the state vector $\mathbf{s}_i$ via an HSV mapping with full $360^\circ$ hue range and high saturation ($\geq 0.75$), ensuring that phenotypically similar cells are chromatically grouped while distinct phenotypes are visually separable.
+Membrane outlines exhibit \emph{iridescence}: RGB components oscillate sinusoidally with simulation time and cell index, mimicking the thin-film interference observed in biological lipid bilayers~\cite{vanniel2018shedding}.
+
+\textbf{Nutrient zones} are rendered as multi-layered translucent cloud sprites with pulsing radial animation, visually encoding the resource landscape.
+The nutrient signature determines the cloud's hue, establishing a visual connection between nutrient identity and the phenotypic colors of cells that specialize on them.
+
+\textbf{Vesicle trails} appear as tapered streaks with velocity-dependent length and brightness proportional to remaining lifetime, creating a visible ``chemical field'' that conveys the spatial pattern of inter-cell signaling.
+
+\textbf{DNA barcode panel.}
+The right-side panel displays genome ($G = 16$ channels) and expressed phenotype (first 16 state dimensions) as horizontal color-coded barcodes, sorted by nutrient-cluster assignment.
+This juxtaposition enables visual detection of speciation events: when a contiguous cluster of barcodes develops a distinct color pattern, a new lineage has emerged.
+Cluster boundaries are marked with colored tags matching the nutrient source, linking spatial ecology to genomic structure.
+
+\textbf{Synaptic network.}
+Faint lines connect each cell to its three nearest neighbors (distance $< 45$ pixels), rendering the implicit neighbor graph that underlies the Transformer's attention computation.
+Line opacity decreases with distance, creating a visual analog of attention strength.
+
+The visualization design follows the principle of \emph{double legibility}~\cite{bedau2003artificial}: the system must be scientifically analyzable \emph{and} visually engaging.
+The transparent lens aesthetic---inspired by microscopy of living cells---produces emergent visual complexity (overlapping membranes create Moir\'{e}-like interference patterns) that rewards sustained observation and makes the simulation function as both a scientific instrument and a generative artwork.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{docs/screenshot.png}
+\caption{Real-time visualization at step 3000. Transparent lens cells cluster around cloudy nutrient zones, with iridescent membranes encoding phenotype. Right: DNA barcode panel showing genome (left column) and expressed phenotype (right column) sorted by nutrient cluster. Faint synaptic lines reveal the neighbor topology.}
+\label{fig:visual}
+\end{figure}
+
+
 % ============================================================================
 \section{Experimental Setup}
 \label{sec:experiments}
@@ -613,6 +658,18 @@ Several limitations of the current system should be acknowledged:
 
   \item \textbf{Small populations.} The steady-state populations of 50--280 cells are far below the scale at which complex ecological dynamics (food webs, trophic levels, competitive exclusion) typically emerge.
 \end{enumerate}
+
+\subsection{Visualization as Epistemic Tool and Aesthetic Object}
+
+The visualization design serves a dual function that merits explicit discussion.
+\emph{Epistemically}, the transparent-membrane rendering makes three otherwise invisible dynamics directly observable: (i) phenotypic clustering becomes spatial color segregation; (ii) vesicle communication appears as a visible ``chemical weather'' of glowing streaks overlaying the cell population; and (iii) the DNA barcode panel provides a phylogenetic snapshot at every frame, revealing speciation events as sudden barcode-pattern breaks within a nutrient cluster.
+These channels collapse a high-dimensional dynamical system ($200+$ cells $\times$ 32-dim state $\times$ 16-dim genome) into a single frame that a human observer can parse in under a second.
+
+\emph{Aesthetically}, the system exhibits visual qualities that arise without explicit design: the overlapping translucent membranes produce emergent interference patterns reminiscent of Ernst Haeckel's \emph{Kunstformen der Natur}; nutrient halos create depth-of-field layering; and the iridescent membrane shimmer evokes the optical properties of living cells under dark-field microscopy.
+These are not cosmetic additions but \emph{natural consequences of mapping internal state to visual channels}---the beauty, such as it is, is a byproduct of information density.
+
+This matters because ALife systems are increasingly exhibited as artworks \cite{sims1994evolving} and used as creative tools.
+The capacity for real-time visual engagement is not peripheral to the scientific contribution: it determines whether researchers (and audiences) can develop the sustained attention necessary to notice rare, transient phenomena---an incipient species, a wave of vesicle-mediated coordination, a predation cascade---that would be invisible in log files alone.
 
 \subsection{Future Work}
 
