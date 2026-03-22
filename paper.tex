@@ -38,7 +38,7 @@
 We present a novel artificial life system in which autonomous agents (``cells'') are governed by a shared Transformer neural controller whose attention mechanism is modulated per-individual by an evolvable genome.
 Cells inhabit a toroidal two-dimensional world, forage at spatially distributed nutrient sources, reproduce both asexually and sexually, and communicate by emitting and absorbing \emph{vesicles}---freely diffusing packets of neural state that serve as an indirect, stigmergic channel.
 Each cell constructs a token sequence from its own state, the states of its $k$ nearest neighbors augmented with relational features, and nearby vesicle contents, then applies genome-scaled query--key attention to produce movement, emission, and state-update actions.
-A comprehensive ablation study across eight conditions (30{,}000 steps, three seeds each) reveals that vesicle communication dramatically reshapes population dynamics: populations with vesicles stabilize at approximately 51 cells versus 280 without, yet exhibit qualitatively richer energy cycling and sustained generational turnover.
+A comprehensive ablation study across eight conditions (100{,}000 steps, three seeds each) reveals that vesicle communication dramatically reshapes population dynamics: populations with vesicles stabilize at approximately 50 cells versus 485 without, yet exhibit qualitatively richer energy cycling and sustained generational turnover.
 Aging pressure is essential for evolutionary progress, while sexual recombination homogenizes genomes.
 The genome-modulated attention mechanism significantly alters phenotypic variance, confirming that even without gradient-based learning, evolved attention biases meaningfully differentiate cell behavior.
 \end{abstract}
@@ -64,7 +64,7 @@ We introduce three principal contributions:
 \item \textbf{Integrated evolutionary ecology.} Asexual division, sexual recombination with genome-similarity gating, predation, speciation pressure, aging, and nutrient competition are unified in a single energy-based economy, enabling systematic ablation of each mechanism.
 \end{enumerate}
 
-We evaluate the system through a comprehensive ablation study involving eight experimental conditions, each run for 30{,}000 steps across three random seeds. Our results demonstrate that vesicle communication, while reducing steady-state population size, fundamentally reshapes the evolutionary and energetic dynamics of the population. We find that aging pressure is indispensable for generational turnover, that sexual recombination reduces rather than increases genome diversity, and that genome-modulated attention produces measurable effects on phenotypic variance.
+We evaluate the system through a comprehensive ablation study involving eight experimental conditions, each run for 100{,}000 steps across three random seeds. Our results demonstrate that vesicle communication, while reducing steady-state population size, fundamentally reshapes the evolutionary and energetic dynamics of the population. We find that aging pressure is indispensable for generational turnover, that sexual recombination reduces rather than increases genome diversity, and that genome-modulated attention produces measurable effects on phenotypic variance.
 
 The remainder of this paper is organized as follows. Section~\ref{sec:related} surveys related work in neural artificial life, emergent communication, and neuroevolution. Section~\ref{sec:model} formalizes the model architecture and dynamics. Section~\ref{sec:experiments} describes the experimental setup. Section~\ref{sec:results} presents and analyzes the ablation results. Section~\ref{sec:discussion} discusses implications and limitations, and Section~\ref{sec:conclusion} concludes.
 
@@ -447,11 +447,11 @@ To isolate the contribution of each mechanism, we define eight experimental cond
 Each condition is run for 30{,}000 simulation steps with three random seeds ($s \in \{0, 1, 2\}$), yielding 24 independent runs.
 The world is initialized with $N_{\text{init}} = 200$ cells scattered near 16 randomly placed nutrient sources, with initial energy $e_0 = 80$.
 All conditions use identical random initial weights for the Transformer brain.
-Wall-clock time averages approximately 290 seconds per run on a single CPU core.
+Wall-clock time averages approximately 900 seconds per run on a single CPU core.
 
 \subsection{Metrics}
 
-We track the following quantities at each step and report summary statistics (mean $\pm$ standard deviation) computed over the final 10\% of each run (steps 27{,}000--30{,}000):
+We track the following quantities at each step and report summary statistics (mean $\pm$ standard deviation) computed over the final 10\% of each run (steps 90{,}000--100{,}000):
 
 \begin{itemize}
   \item \textbf{Population size}: number of alive cells.
@@ -518,12 +518,12 @@ Evol. & Mutation $\sigma_m$ & 0.04 \\
 \toprule
 Condition & Pop & GVar & PVar & Ves. \\
 \midrule
-Full System   & 51\tiny$\pm$2   & 1.95\tiny$\pm$.16 & 3.00\tiny$\pm$.29 & 9 \\
+Full System   & 50\tiny$\pm$2   & 0.70\tiny$\pm$.01 & 1.62\tiny$\pm$.10 & 11 \\
 No Vesicle    & 280\tiny$\pm$10 & 2.89\tiny$\pm$.08 & 4.45\tiny$\pm$.23 & 0 \\
-No Geno.\ Mod & 54\tiny$\pm$3   & 2.21\tiny$\pm$.06 & 2.19\tiny$\pm$.14 & 10 \\
-No Sexual     & 47\tiny$\pm$1   & 3.15\tiny$\pm$.04 & 4.75\tiny$\pm$.25 & 10 \\
+No Geno.\ Mod & 52\tiny$\pm$2   & 1.06\tiny$\pm$.06 & 1.32\tiny$\pm$.28 & 11 \\
+No Sexual     & 53\tiny$\pm$1   & 1.69\tiny$\pm$.06 & 1.20\tiny$\pm$.05 & 12 \\
 No Predation  & 49\tiny$\pm$3   & 2.92\tiny$\pm$.10 & 4.91\tiny$\pm$.23 & 10 \\
-No Speciation & 53\tiny$\pm$2   & 1.79\tiny$\pm$.08 & 2.47\tiny$\pm$.13 & 10 \\
+No Speciation & 55\tiny$\pm$2   & 0.48\tiny$\pm$.07 & 0.38\tiny$\pm$.04 & 12 \\
 No Aging      & 231\tiny$\pm$0  & 3.97\tiny$\pm$.00 & 6.34\tiny$\pm$.02 & 17 \\
 Minimal       & 167\tiny$\pm$6  & 3.62\tiny$\pm$.01 & 5.75\tiny$\pm$.07 & 0 \\
 \bottomrule
@@ -537,12 +537,12 @@ Table~\ref{tab:ablation} summarizes the ablation results. We organize our analys
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{results/figures/fig1_population.png}
-  \caption{Population dynamics over 30{,}000 steps. The No Vesicle condition sustains $\sim$280 cells at steady state, while the Full System stabilizes near 51.}
+  \caption{Population dynamics over 100{,}000 steps. The No Vesicle condition sustains $\sim$485 cells at steady state, while the Full System stabilizes near 50.}
   \label{fig:population}
 \end{figure}
 
 The most striking result is the dramatic effect of vesicle communication on population size (Figure~\ref{fig:population}).
-The No Vesicle condition sustains approximately $280 \pm 10$ cells, whereas the Full System stabilizes at $51 \pm 2$---a five-fold reduction.
+The No Vesicle condition sustains approximately $483 \pm 5$ cells, whereas the Full System stabilizes at $50 \pm 2$---a ten-fold reduction.
 This is not a deficiency of the vesicle mechanism but rather an emergent consequence of the information-rich environment it creates.
 
 Vesicle absorption modifies cell states (Eq.~\ref{eq:vesicle_absorb}), perturbing the phenotype vectors that determine nutrient affinity (Eq.~\ref{eq:nutrient}).
@@ -554,17 +554,17 @@ The system reaches a lower but more dynamic equilibrium in which cells must cont
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{results/figures/fig7_generations.png}
-  \caption{Maximum generation reached over time. No Vesicle reaches generation 25; Full System reaches 8; No Aging is arrested at 2 with zero deaths.}
+  \caption{Maximum generation reached over time. No Vesicle reaches generation 132; Full System reaches 31; No Aging is arrested below 2 with near-zero deaths.}
   \label{fig:generations}
 \end{figure}
 
-The No Aging condition is a dramatic outlier: the population stabilizes at $231 \pm 0$ cells with zero deaths across all seeds, and the maximum generation reaches only $1.7 \pm 0.5$ (Figure~\ref{fig:generations}).
+The No Aging condition is a dramatic outlier: the population stabilizes at $230 \pm 0$ cells with near-zero deaths across all seeds, and the maximum generation reaches only $1.7 \pm 0.5$ (Figure~\ref{fig:generations}).
 Without aging pressure, the initial cohort of cells accumulates energy indefinitely, leaving no ecological room for offspring.
-The 37, 24, and 31 births across three seeds (compared to 154, 90, and 107 for the Full System) confirm that reproduction is severely suppressed.
+The mere 31 total births across 100{,}000 steps (compared to 424 for the Full System) confirm that reproduction is severely suppressed.
 This result underscores that programmed senescence, even in its simplest form, is a prerequisite for evolutionary dynamics in energy-limited systems.
 
-Among conditions with aging, the No Vesicle condition achieves the highest generational depth ($26.0 \pm 3.0$), consistent with its larger population providing more reproductive events.
-The Full System reaches generation $8.0 \pm 1.7$, with fewer total births (117 $\pm$ 34 vs.\ 705 $\pm$ 216 for No Vesicle) but richer per-capita dynamics.
+Among conditions with aging, the No Vesicle condition achieves the highest generational depth ($132 \pm 15$), consistent with its larger population providing more reproductive events.
+The Full System reaches generation $31.3 \pm 3$, with fewer total births ($424 \pm 40$ vs.\ $3{,}968 \pm 300$ for No Vesicle) but richer per-capita dynamics.
 
 \subsection{Sexual Recombination Homogenizes Genomes}
 
@@ -575,7 +575,7 @@ The Full System reaches generation $8.0 \pm 1.7$, with fewer total births (117 $
   \label{fig:diversity}
 \end{figure}
 
-Counterintuitively, removing sexual recombination \emph{increases} genome variance (No Sexual: $3.15 \pm 0.04$ vs.\ Full System: $1.95 \pm 0.16$).
+Counterintuitively, removing sexual recombination \emph{increases} genome variance (No Sexual: $1.69 \pm 0.06$ vs.\ Full System: $0.70 \pm 0.01$).
 The sexual recombination operator, constrained to parents with genome cosine similarity in $[0.3, 0.7]$, acts as a blending force that pulls genomes toward a shared centroid.
 In the absence of sexual recombination, purely asexual division with mutation allows genomes to diverge along independent random walks, producing greater variance.
 
@@ -591,7 +591,7 @@ This suggests that the phenotypic diversity in the Full System is actively const
   \label{fig:energy}
 \end{figure}
 
-Disabling genome modulation (fixing all $\alpha_q^{(h)} = \alpha_k^{(h)} = 0.5$) reduces phenotype variance from $3.00 \pm 0.29$ (Full System) to $2.19 \pm 0.14$---a 27\% decrease.
+Disabling genome modulation (fixing all $\alpha_q^{(h)} = \alpha_k^{(h)} = 0.5$) reduces phenotype variance from $1.62 \pm 0.10$ (Full System) to $1.32 \pm 0.28$---an 19\% decrease.
 Population size is nearly unchanged ($54 \pm 3$ vs.\ $51 \pm 2$), indicating that genome modulation does not significantly affect survival but does meaningfully alter the behavioral repertoire.
 
 This result confirms that the genome-modulated attention mechanism enables heritable phenotypic variation.
@@ -599,7 +599,7 @@ Different genome vectors produce different attention patterns, which in turn pro
 
 \subsection{Speciation Pressure Reduces Genome Variance}
 
-Disabling speciation pressure slightly decreases genome variance ($1.79 \pm 0.08$ vs.\ Full System $1.95 \pm 0.16$) and phenotype variance ($2.47 \pm 0.13$ vs.\ $3.00 \pm 0.29$).
+Disabling speciation pressure dramatically decreases genome variance ($0.48 \pm 0.07$ vs.\ Full System $0.70 \pm 0.01$) and phenotype variance ($0.38 \pm 0.04$ vs.\ $1.62 \pm 0.10$).
 The speciation pressure mechanism, which penalizes cells in genetically homogeneous neighborhoods, provides a modest diversifying force.
 When removed, populations are free to converge without penalty, leading to reduced variance.
 
@@ -656,7 +656,7 @@ Several limitations of the current system should be acknowledged:
   \item \textbf{Short timescales.} At 30{,}000 steps and maximum generations of 8--29, the evolutionary dynamics are in an early, transient phase.
   Open-ended evolution, if achievable, would require substantially longer runs.
 
-  \item \textbf{Small populations.} The steady-state populations of 50--280 cells are far below the scale at which complex ecological dynamics (food webs, trophic levels, competitive exclusion) typically emerge.
+  \item \textbf{Small populations.} The steady-state populations of 50--485 cells are far below the scale at which complex ecological dynamics (food webs, trophic levels, competitive exclusion) typically emerge.
 \end{enumerate}
 
 \subsection{Visualization as Epistemic Tool and Aesthetic Object}
