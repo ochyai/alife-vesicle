@@ -693,27 +693,36 @@ class Ren:
         else:
             self._prev_flash = None
 
-        # Update and draw ripples
+        # Update and draw ripples on SRCALPHA surface (so alpha actually works)
+        ripple_surf = self.cell_surf  # reuse, will be cleared below for cells
         new_ripples = []
         for rip in self.ripples:
             rx, ry, rr, ra, rc = rip
             if ra > 0:
                 a = max(0, min(255, int(ra)))
-                pygame.draw.circle(self.scr, (*rc, a), (int(rx), int(ry)), int(rr), 1)
-                # Second thinner ring slightly behind
+                pygame.draw.circle(ripple_surf, (*rc, a), (int(rx), int(ry)), int(rr), 1)
                 if rr > 8:
                     a2 = max(0, min(255, int(ra * 0.5)))
-                    pygame.draw.circle(self.scr, (*rc, a2), (int(rx), int(ry)), int(rr - 4), 1)
-                rip[2] = rr + 2.0   # expand
-                rip[3] = ra - 12.0  # fade
+                    pygame.draw.circle(ripple_surf, (*rc, a2), (int(rx), int(ry)), int(rr - 4), 1)
+                rip[2] = rr + 2.0
+                rip[3] = ra - 12.0
                 if rip[3] > 0:
                     new_ripples.append(rip)
         self.ripples = new_ripples
+        if self.ripples:
+            self.scr.blit(ripple_surf, (0, 0))
+            ripple_surf.fill((0, 0, 0, 0))
 
         # ── Cells — transparent lens / fluid membrane ──
         self.cell_surf.fill((0, 0, 0, 0))
         if N > 0:
-            n_pts = 24  # more points = smoother membrane
+            # Dynamic LOD: fewer points and layers when many cells
+            if N > 400:
+                n_pts = 12; n_layers = 3  # fast mode
+            elif N > 200:
+                n_pts = 16; n_layers = 4
+            else:
+                n_pts = 20; n_layers = 5  # full quality
             tau = math.tau
             for ci in range(N):
                 x, y = int(pos_np[ci, 0]), int(pos_np[ci, 1])
@@ -761,31 +770,37 @@ class Ren:
 
                 body_pts = _membrane_pts(r, 1.0)
 
-                # ── Lens effect: concentric translucent layers ──
-                # Outer lens haze (very transparent)
-                haze_pts = _membrane_pts(r + 6, 0.5)
-                pygame.draw.polygon(self.cell_surf, (*col, int(8 + fl * 15)), haze_pts)
+                # ── Lens layers (LOD-aware) ──
+                if n_layers >= 5:
+                    # Full: haze + mid + inner + core + membrane
+                    haze_pts = _membrane_pts(r + 6, 0.5)
+                    pygame.draw.polygon(self.cell_surf, (*col, int(8 + fl * 15)), haze_pts)
+                    mid_pts = _membrane_pts(r + 1, 0.8)
+                    pygame.draw.polygon(self.cell_surf, (*col, int(20 + 15 * t)), mid_pts)
+                    inner_pts = _membrane_pts(r * 0.7, 0.6)
+                    pygame.draw.polygon(self.cell_surf, (*col, int(35 + 25 * t + fl * 20)), inner_pts)
+                elif n_layers >= 4:
+                    # No haze, mid + inner
+                    mid_pts = _membrane_pts(r + 1, 0.8)
+                    pygame.draw.polygon(self.cell_surf, (*col, int(22 + 18 * t)), mid_pts)
+                    inner_pts = _membrane_pts(r * 0.7, 0.6)
+                    pygame.draw.polygon(self.cell_surf, (*col, int(40 + 25 * t + fl * 20)), inner_pts)
+                else:
+                    # Minimal: just body fill
+                    pygame.draw.polygon(self.cell_surf, (*col, int(35 + 30 * t + fl * 20)), body_pts)
 
-                # Mid lens body (semi-transparent — the "glass")
-                mid_pts = _membrane_pts(r + 1, 0.8)
-                pygame.draw.polygon(self.cell_surf, (*col, int(20 + 15 * t)), mid_pts)
-
-                # Inner lens (more opaque toward center)
-                inner_pts = _membrane_pts(r * 0.7, 0.6)
-                pygame.draw.polygon(self.cell_surf, (*col, int(35 + 25 * t + fl * 20)), inner_pts)
-
-                # Core (brightest, smallest — the "focal point")
-                core_pts = _membrane_pts(r * 0.35, 0.3)
+                # Core (always drawn — the "focal point")
                 core_col = (min(255, col[0]+30), min(255, col[1]+30), min(255, col[2]+30))
-                pygame.draw.polygon(self.cell_surf, (*core_col, int(50 + 30 * t)), core_pts)
+                pygame.draw.circle(self.cell_surf, (*core_col, int(50 + 30 * t)),
+                                   (x, y), max(2, int(r * 0.35)))
 
-                # ── Membrane outline — sharp, thin, defines the cell edge ──
+                # Membrane outline (always drawn)
                 mc = (min(255, col[0] + 60 + int(fl * 80)),
                       min(255, col[1] + 60 + int(fl * 80)),
                       min(255, col[2] + 60 + int(fl * 80)))
                 pygame.draw.polygon(self.cell_surf, (*mc, int(100 + 80 * t)), body_pts, 1)
 
-                # ── Specular highlight — lens caustic (bright spot offset from center) ──
+                # Specular highlight (skip secondary in fast mode)
                 spec_angle = math.atan2(dy_n, dx_n) if spd > 0.3 else (age * 0.01 + idx_val)
                 spec_r = r * 0.3
                 spec_x = x + int(math.cos(spec_angle + 0.8) * spec_r)
@@ -795,11 +810,11 @@ class Ren:
                 spec_sz = max(2, int(r * 0.2))
                 pygame.draw.circle(self.cell_surf, (255, 255, 255, min(200, spec_a)),
                                    (spec_x, spec_y), spec_sz)
-                # Tiny secondary specular
-                spec2_x = x - int(math.cos(spec_angle + 0.3) * spec_r * 0.6)
-                spec2_y = y - int(math.sin(spec_angle + 0.3) * spec_r * 0.6)
-                pygame.draw.circle(self.cell_surf, (255, 255, 240, min(120, spec_a // 2)),
-                                   (spec2_x, spec2_y), max(1, spec_sz - 1))
+                if n_layers >= 4:
+                    spec2_x = x - int(math.cos(spec_angle + 0.3) * spec_r * 0.6)
+                    spec2_y = y - int(math.sin(spec_angle + 0.3) * spec_r * 0.6)
+                    pygame.draw.circle(self.cell_surf, (255, 255, 240, min(120, spec_a // 2)),
+                                       (spec2_x, spec2_y), max(1, spec_sz - 1))
 
                 # ── Division-ready: pulsing outer ring ──
                 if e > DIV_E * .85:
@@ -939,8 +954,8 @@ def main():
                 mx, my = ev.pos
                 sim_w = SW if r.show_panel else TW
                 if mx < sim_w:
-                    w.nuts.append(Nut(mx, my))
-                    r._prev_nut_ids = None  # force sprite regeneration
+                    w.add_nutrient(mx, my)
+                    r.nut_sprites = {}  # force sprite regeneration
 
         if not paused:
             for _ in range(speed):
