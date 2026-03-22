@@ -88,7 +88,14 @@ Real-time visualization featuring:
 | `V` | Toggle vesicle communication | 小胞通信の切替 |
 | `D` | Toggle side panel | サイドパネルの切替 |
 | `R` | Reset simulation | シミュレーションのリセット |
-| `+` / `-` | Increase / Decrease speed (1x--5x) | 速度の増減（1x--5x） |
+| `+` / `-` | Increase / Decrease speed (1x--20x) | 速度の増減（1x--20x） |
+| `Z` / `X` | Zoom in / Zoom out (0.5x--3x) | ズームイン / ズームアウト |
+| `Scroll` | Scroll wheel zoom | ホイールズーム |
+| `Mid-drag` | Pan camera | カメラパン |
+| `S` | Toggle stats overlay (FPS, memory, timing) | 統計オーバーレイの切替 |
+| `F5` | Start / Stop recording (PNG frames) | 録画の開始 / 停止 |
+| `F12` | Save screenshot | スクリーンショット保存 |
+| `F11` | Toggle fullscreen | フルスクリーン切替 |
 | `Click` | Place nutrient source at cursor | カーソル位置に栄養源を配置 |
 | `ESC` / `Q` | Quit | 終了 |
 

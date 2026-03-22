@@ -1,13 +1,13 @@
 """
-ALife v6: Rewritten Simulation Core — Transformer Vesicle System
-================================================================
-Upgraded brain (relational features, genome Q/K modulation, vesicle attention tokens),
-nonlinear vesicle exchange, nutrient depletion, aging/crowding pressure,
-attention masking, bug fixes (V-toggle, absorption uniqueness, nutrient reward timing).
+ALife v7: Transformer Vesicle Artificial Life System
+====================================================
+Transformer-brained cells communicate via vesicle diffusion.
+Genome-modulated attention, relational features, nonlinear vesicle exchange,
+nutrient depletion/regeneration, aging, crowding, speciation pressure,
+predation, sexual recombination, transparent lens visuals, motion trails.
 
-Renderer code (class Ren) is preserved exactly from v5.
-
-Controls: SPC:pause  V:vesicle  R:reset  +/-:speed  click:nutrient  ESC:quit
+Controls: SPC:pause  V:vesicle  D:panel  R:reset  +/-:speed  Z/X:zoom
+          S:stats  F5:record  F12:screenshot  F11:fullscreen  click:nutrient  ESC:quit
 """
 
 import math, random, os, time
@@ -39,7 +39,7 @@ NNUTS = 8; NRAD = 160; NGAIN = 0.6
 PASSIVE_REGEN = 0.004  # background sustain everywhere
 
 # ━━ Visual ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BG = (2, 2, 8); PBG = (8, 8, 18); FADE = 14
+BG = (3, 3, 12); PBG = (8, 8, 18); FADE = 12
 
 SWt = torch.tensor([float(SW), float(TH)])
 
@@ -635,7 +635,7 @@ class Ren:
     def __init__(self):
         pygame.init()
         self.scr = pygame.display.set_mode((TW, TH))
-        pygame.display.set_caption("ALife v5 — Enhanced Organic Renderer")
+        pygame.display.set_caption("ALife v7 — Transformer Vesicle Life")
         self.clk = pygame.time.Clock()
         self.f11 = pygame.font.SysFont("Menlo", 11)
         self.f13 = pygame.font.SysFont("Menlo", 13)
@@ -686,23 +686,28 @@ class Ren:
         self._draw_ms = 0.0
 
     def _make_nutrient_sprite(self, nut):
-        """Create a cloudy sprite using overlapping translucent circles."""
-        size = int(nut.radius * 2.4)
+        """Create a cloudy sprite using overlapping translucent circles with glow."""
+        size = int(nut.radius * 2.8)
         surf = pygame.Surface((size, size), pygame.SRCALPHA)
         cx, cy = size // 2, size // 2
         col = nut.bright
-        # 7 layers of offset translucent circles for cloud effect
         rng = random.Random(int(nut.x * 100 + nut.y))
-        for layer in range(7):
-            ox = rng.randint(-int(nut.radius * 0.15), int(nut.radius * 0.15))
-            oy = rng.randint(-int(nut.radius * 0.15), int(nut.radius * 0.15))
-            scale = 0.5 + layer * 0.1
+        # Outer glow — large diffuse halo
+        for gr in range(3):
+            glow_r = int(nut.radius * (1.1 + gr * 0.15))
+            glow_a = max(3, 12 - gr * 3)
+            pygame.draw.circle(surf, (*col, glow_a), (cx, cy), glow_r)
+        # 9 layers of offset translucent circles for cloud effect
+        for layer in range(9):
+            ox = rng.randint(-int(nut.radius * 0.18), int(nut.radius * 0.18))
+            oy = rng.randint(-int(nut.radius * 0.18), int(nut.radius * 0.18))
+            scale = 0.4 + layer * 0.08
             r = int(nut.radius * scale)
-            a = max(5, 35 - layer * 4)
+            a = max(6, 45 - layer * 4)
             pygame.draw.circle(surf, (*col, a), (cx + ox, cy + oy), r)
         # Bright core
-        pygame.draw.circle(surf, (*col, 55), (cx, cy), int(nut.radius * 0.25))
-        pygame.draw.circle(surf, (255, 255, 255, 30), (cx, cy), int(nut.radius * 0.1))
+        pygame.draw.circle(surf, (*col, 70), (cx, cy), int(nut.radius * 0.3))
+        pygame.draw.circle(surf, (255, 255, 255, 45), (cx, cy), int(nut.radius * 0.12))
         return surf
 
     def _ensure_nut_sprites(self, w):
@@ -1022,6 +1027,34 @@ class Ren:
                     da = int(30 + 25 * math.sin(age * 0.15))
                     div_pts = _membrane_pts(r + 4, 0.6)
                     pygame.draw.polygon(self.cell_surf, (255, 255, 200, da), div_pts, 1)
+
+        # ── Neighbor connection lines — faint synaptic network ──
+        if N > 1:
+            conn_surf = pygame.Surface((SW, TH), pygame.SRCALPHA)
+            # Vectorized: for each cell, draw line to its 3 nearest neighbors
+            pos_t = w.cpos[ai]  # (N, 2) tensor
+            dd_t = wrapped_dist(pos_t, pos_t)  # (N, N) tensor
+            dd_t.fill_diagonal_(1e9)
+            k_conn = min(3, N - 1)
+            _, nn_idx = dd_t.topk(k_conn, largest=False)  # (N, k_conn)
+            nn_d = dd_t.gather(1, nn_idx).numpy()  # (N, k_conn)
+            nn_idx_np = nn_idx.numpy()
+            for ci in range(min(N, 350)):
+                cx0, cy0 = int(pos_np[ci, 0]), int(pos_np[ci, 1])
+                col_ci = pheno_rgb_np(state_np[ci, :4], 0.3)
+                for ki in range(k_conn):
+                    d = nn_d[ci, ki]
+                    if d > 45 or d < 5:
+                        continue
+                    cj = nn_idx_np[ci, ki]
+                    cx1, cy1 = int(pos_np[cj, 0]), int(pos_np[cj, 1])
+                    # Skip wrapped-around lines (screen distance)
+                    if abs(cx0 - cx1) > 60 or abs(cy0 - cy1) > 60:
+                        continue
+                    fade = max(4, int(16 * (1 - d / 45)))
+                    pygame.draw.line(conn_surf, (*col_ci, fade),
+                                     (cx0, cy0), (cx1, cy1), 1)
+            self._comp_surf.blit(conn_surf, (0, 0))
 
         self._comp_surf.blit(self.cell_surf, (0, 0))
 
